@@ -14,7 +14,15 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "echo \"(tests added in Task 1.4 — tenant isolation integration test)\" && exit 0",
-    "clean": "rm -rf dist .tsbuildinfo"
+    "clean": "rm -rf dist .tsbuildinfo",
+
+    "db:generate": "prisma generate",
+    "db:migrate:dev": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:migrate:reset": "prisma migrate reset",
+    "db:push": "prisma db push",
+    "db:studio": "prisma studio",
+    "db:format": "prisma format"
   },
   "dependencies": {
     "@prisma/client": "^5.20.0"

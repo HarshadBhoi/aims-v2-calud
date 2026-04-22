@@ -1,0 +1,540 @@
+// AIMS v2 — Prisma schema (Slice A subset)
+// Derived from database/schema.prisma (canonical) — slimmed to the 14 models
+// that power the Engagement → Finding → PDF journey.
+//
+// NOT in this schema (deferred to future slices):
+//   recommendations, CAPs, corrective actions, work papers, observations,
+//   PBC items/evidence, APM sections, PRCM (processes/risks/controls/tests),
+//   annotations, universe entities, annual plans, CPE, independence
+//   declarations, peer reviews, notifications, files, integrations,
+//   idempotency keys, workflow events, management responses, etc.
+//
+// Add models task-by-task; do NOT try to grow this file toward the canonical
+// by copy-pasting — each addition should be justified by a specific slice
+// feature need.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema", "postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  // pgcrypto deliberately excluded — ALE via packages/encryption/ (ADR-0001).
+  extensions = [uuidOssp(map: "uuid-ossp"), pgTrgm(map: "pg_trgm"), citext]
+  schemas    = ["public", "audit", "platform"]
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum EngagementStatus {
+  PLANNING
+  FIELDWORK
+  REPORTING
+  CLOSED
+
+  @@schema("public")
+}
+
+enum FindingStatus {
+  DRAFT
+  IN_REVIEW
+  APPROVED
+  PUBLISHED
+
+  @@schema("public")
+}
+
+enum FindingClassification {
+  MINOR
+  SIGNIFICANT
+  MATERIAL
+  CRITICAL
+
+  @@schema("public")
+}
+
+enum ReportStatus {
+  DRAFT
+  IN_REVIEW
+  APPROVED
+  PUBLISHED
+
+  @@schema("public")
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  RETURNED
+
+  @@schema("public")
+}
+
+enum UserStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+
+  @@schema("public")
+}
+
+// ============================================================================
+// PLATFORM SCHEMA — cross-tenant, global
+// ============================================================================
+
+/// Published methodology / control-framework / regulatory-overlay pack.
+/// Cross-tenant: every tenant can attach any published pack.
+/// Slice A seeds one version (GAGAS-2024.1).
+model StandardPack {
+  code    String
+  version String
+
+  name          String
+  issuingBody   String
+  publishedYear Int
+
+  // The full StandardPack JSON (see data-model/standard-pack-schema.ts for shape).
+  packContent Json
+
+  // SHA-256 of packContent for tamper detection.
+  contentHash String
+
+  attachments PackAttachment[]
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@id([code, version])
+  @@index([code])
+  @@map("standard_packs")
+  @@schema("platform")
+}
+
+// ============================================================================
+// PUBLIC SCHEMA — tenant-scoped business objects
+// ============================================================================
+
+/// A customer organization.
+model Tenant {
+  id       String @id @default(cuid())
+  slug     String @unique
+  name     String
+  timezone String @default("America/New_York")
+  locale   String @default("en-US")
+
+  status String @default("active")
+
+  users       User[]
+  engagements Engagement[]
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(6)
+  deletedAt DateTime? @db.Timestamptz(6)
+
+  @@index([status])
+  @@map("tenants")
+  @@schema("public")
+}
+
+/// A user account, scoped to one tenant in this slice.
+/// (Canonical schema has UserTenant junction for multi-tenant users — deferred.)
+model User {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Case-insensitive email per tenant.
+  email           String    @db.Citext
+  emailVerifiedAt DateTime? @db.Timestamptz(6)
+  name            String
+  title           String?
+
+  passwordHash String?
+  status       UserStatus @default(ACTIVE)
+  role         String // "CAE" | "Supervisor" | "Senior" | "Staff" | "Admin" | "Methodology"
+
+  lastLoginAt      DateTime? @db.Timestamptz(6)
+  failedLoginCount Int       @default(0)
+  lockedUntil      DateTime? @db.Timestamptz(6)
+
+  mfaSecret         MfaSecret?
+  sessions          Session[]
+  engagementsLed    Engagement[]      @relation("EngagementLead")
+  findingsAuthored  Finding[]         @relation("FindingAuthor")
+  reportsAuthored   Report[]          @relation("ReportAuthor")
+  approvalsAssigned ApprovalRequest[] @relation("ApprovalApprover")
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([tenantId, email])
+  @@index([tenantId, status])
+  @@map("users")
+  @@schema("public")
+}
+
+/// TOTP shared secret, plus optional backup codes. ALE-encrypted.
+/// 1:1 with User; separate row so state changes don't churn User.
+model MfaSecret {
+  id       String @id @default(cuid())
+  tenantId String
+  userId   String @unique
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Ciphertext — plaintext never leaves the encryption module.
+  secretCipher      Bytes
+  backupCodesCipher Bytes?
+
+  algorithm String @default("TOTP")
+  digits    Int    @default(6)
+  period    Int    @default(30)
+
+  verifiedAt DateTime? @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([tenantId])
+  @@map("mfa_secrets")
+  @@schema("public")
+}
+
+/// An active auth session. Hybrid revocation per ADR-0005:
+///   - JWT access tokens (short-lived) reference this row by `familyId`.
+///   - Refresh tokens are opaque, hashed at rest (`tokenHash`).
+///   - Revocation writes to `SessionBlocklist` for fast lookup.
+model Session {
+  id       String @id @default(cuid())
+  tenantId String
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash String @unique // SHA-256 of opaque refresh token
+
+  // JWT family (for rotation detection, ADR-0005).
+  familyId   String
+  generation Int    @default(0)
+
+  issuedAt  DateTime  @default(now()) @db.Timestamptz(6)
+  expiresAt DateTime  @db.Timestamptz(6)
+  revokedAt DateTime? @db.Timestamptz(6)
+
+  // Step-up MFA freshness window (signoff actions gate on this).
+  mfaFreshUntil DateTime? @db.Timestamptz(6)
+
+  ipAddress String? @db.Inet
+  userAgent String?
+
+  @@index([tenantId, userId])
+  @@index([familyId])
+  @@index([expiresAt])
+  @@map("sessions")
+  @@schema("public")
+}
+
+/// Revoked session tokens (blocklist_checkable = true path per ADR-0005).
+/// Redis caches this for sub-second revocation propagation; Postgres is
+/// the authoritative store.
+model SessionBlocklist {
+  tokenHash String   @id
+  tenantId  String
+  reason    String?
+  revokedBy String?
+  revokedAt DateTime @default(now()) @db.Timestamptz(6)
+  expiresAt DateTime @db.Timestamptz(6) // TTL matches the original session expiry
+
+  @@index([tenantId])
+  @@index([expiresAt])
+  @@map("session_blocklist")
+  @@schema("public")
+}
+
+/// An audit engagement.
+model Engagement {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name         String
+  auditeeName  String
+  fiscalPeriod String // e.g., "FY26 Q1"
+  periodStart  DateTime @db.Date
+  periodEnd    DateTime @db.Date
+  plannedHours Int?
+
+  status EngagementStatus @default(PLANNING)
+
+  leadUserId String
+  lead       User   @relation("EngagementLead", fields: [leadUserId], references: [id])
+
+  // Once the engagement leaves planning, pack changes route through CAE approval.
+  packStrategyLocked Boolean @default(false)
+
+  attachments PackAttachment[]
+  findings    Finding[]
+  reports     Report[]
+
+  // Optimistic concurrency.
+  version Int @default(1) @map("_version")
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([tenantId, status])
+  @@index([tenantId, leadUserId])
+  @@map("engagements")
+  @@schema("public")
+}
+
+/// An engagement ↔ StandardPack attachment.
+/// Slice A expects one pack per engagement (GAGAS-2024.1). Multi-pack +
+/// annotations come in Slice B.
+model PackAttachment {
+  id           String     @id @default(cuid())
+  tenantId     String
+  engagementId String
+  engagement   Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  packCode    String
+  packVersion String
+  pack        StandardPack @relation(fields: [packCode, packVersion], references: [code, version])
+
+  attachedAt DateTime @default(now()) @db.Timestamptz(6)
+  attachedBy String
+
+  @@unique([engagementId, packCode, packVersion])
+  @@index([tenantId])
+  @@map("pack_attachments")
+  @@schema("public")
+}
+
+/// A finding — a formal statement of a control failure or risk realized.
+/// Bitemporal: tracks both business-time (valid_from/valid_to) and
+/// transaction-time (transaction_from/transaction_to). The "current row"
+/// convention: transaction_to IS NULL.
+model Finding {
+  id           String     @id @default(cuid())
+  tenantId     String
+  engagementId String
+  engagement   Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  findingNumber  String // engagement-unique (e.g., "F-2026-0042")
+  title          String
+  classification FindingClassification @default(SIGNIFICANT)
+
+  // GAGAS §6.39 element values (+ IIA 5-Cs etc. for other standards).
+  // ALE-encrypted blob at rest: ciphertext of the serialized element object.
+  // See @aims/encryption for shape.
+  elementValuesCipher Bytes?
+
+  // Non-sensitive index — which elements are filled.
+  // For GAGAS: 0-4 matching the four-element progress bar in UX.
+  elementsComplete Int @default(0)
+
+  status FindingStatus @default(DRAFT)
+
+  // Business time.
+  validFrom DateTime? @db.Date
+  validTo   DateTime? @db.Date
+
+  // Transaction time (bitemporal).
+  transactionFrom DateTime  @default(now()) @db.Timestamptz(6)
+  transactionTo   DateTime? @db.Timestamptz(6) // null = current row
+
+  authorId String
+  author   User   @relation("FindingAuthor", fields: [authorId], references: [id])
+
+  // Immutability once published.
+  lockedAt DateTime? @db.Timestamptz(6)
+  lockedBy String?
+
+  approvals ApprovalRequest[]
+
+  version Int @default(1) @map("_version")
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([tenantId, engagementId, findingNumber])
+  @@index([tenantId, engagementId, status])
+  @@index([tenantId, authorId])
+  @@index([tenantId, transactionFrom, transactionTo])
+  @@map("findings")
+  @@schema("public")
+}
+
+/// Approval request — powers finding approve + report sign flows.
+/// Polymorphic via targetType + targetId.
+model ApprovalRequest {
+  id       String @id @default(cuid())
+  tenantId String
+
+  targetType String // "finding" | "report"
+  targetId   String
+
+  status ApprovalStatus @default(PENDING)
+
+  requestedById String
+  approverId    String?
+  approver      User?   @relation("ApprovalApprover", fields: [approverId], references: [id])
+
+  // MFA step-up evidence (session whose mfaFreshUntil must cover decidedAt).
+  approverSessionId String?
+
+  decision        String? // "APPROVED" | "REJECTED" | "RETURNED"
+  decisionComment String?
+  decidedAt       DateTime? @db.Timestamptz(6)
+
+  // Foreign key for cascade when the target is a finding.
+  findingId String?
+  finding   Finding? @relation(fields: [findingId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([tenantId, status, targetType])
+  @@index([tenantId, approverId, status])
+  @@index([findingId])
+  @@map("approval_requests")
+  @@schema("public")
+}
+
+/// A report drafted for an engagement. Versions accrete in ReportVersion.
+model Report {
+  id           String     @id @default(cuid())
+  tenantId     String
+  engagementId String
+  engagement   Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  templateKey String // e.g., "engagement-report-v1"
+  title       String
+
+  status ReportStatus @default(DRAFT)
+
+  authorId String
+  author   User   @relation("ReportAuthor", fields: [authorId], references: [id])
+
+  versions ReportVersion[]
+
+  version Int @default(1) @map("_version")
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([tenantId, engagementId])
+  @@index([tenantId, status])
+  @@map("reports")
+  @@schema("public")
+}
+
+/// A frozen snapshot of a report at a point in time.
+/// Draft versions (v0.1, v0.2) accrete during authoring; publishing produces
+/// a v1.0 with signatures + content hash anchored to the audit log.
+model ReportVersion {
+  id       String @id @default(cuid())
+  tenantId String
+  reportId String
+  report   Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  versionNumber String // "v0.1", "v1.0", "v1.1"
+  isDraft       Boolean @default(true)
+
+  // Tree of data-bound + editorial sections. ALE-encrypted.
+  contentCipher Bytes
+
+  // SHA-256 of the decrypted content; matches the audit-log entry on publish.
+  contentHash String?
+
+  // Rendered PDF (async via outbox → worker → S3).
+  pdfS3Key      String?
+  pdfRenderedAt DateTime? @db.Timestamptz(6)
+
+  signedBy String?
+  signedAt DateTime? @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([reportId, versionNumber])
+  @@index([tenantId, reportId])
+  @@map("report_versions")
+  @@schema("public")
+}
+
+// ============================================================================
+// AUDIT SCHEMA — tamper-evident append-only
+// ============================================================================
+
+/// Hash-chained audit log.
+/// Every mutating action (and every signoff, export, read of sensitive data)
+/// appends a row. Each row includes SHA-256 of the previous row, enabling
+/// end-to-end tamper detection.
+///
+/// Composite PK on (id, loggedAt) prepares for monthly partitioning later.
+model AuditLog {
+  id       String  @default(cuid())
+  tenantId String?
+
+  action     String // e.g., "finding.created", "report.signed"
+  entityType String // "engagement" | "finding" | "report" | etc.
+  entityId   String?
+
+  // User context
+  userId    String?
+  userEmail String? // snapshot in case user deleted
+  sessionId String?
+
+  // Request context
+  ipAddress String? @db.Inet
+  userAgent String?
+
+  // Change details (may be null for read events)
+  beforeData     Json?
+  afterData      Json?
+  changesSummary String?
+
+  // Tamper-evidence hash chain (computed by trigger in Task 1.7).
+  previousHash  String?
+  contentHash   String
+  chainPosition BigInt  @default(autoincrement())
+
+  loggedAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([id, loggedAt])
+  @@index([tenantId, entityType, entityId, loggedAt])
+  @@index([tenantId, userId, loggedAt])
+  @@index([chainPosition])
+  @@map("audit_log")
+  @@schema("audit")
+}
+
+/// Transactional outbox (ADR-0004).
+/// Written in the same transaction as the state change that needs to cause
+/// an async effect (PDF render, notification, webhook). A poller drains
+/// unpublished rows and pushes them to SQS.
+model OutboxEvent {
+  id       String @id @default(cuid())
+  tenantId String
+
+  eventType String
+  payload   Json
+
+  // Dispatch tracking
+  publishedAt  DateTime? @db.Timestamptz(6)
+  sqsMessageId String?
+
+  // Retry bookkeeping (in case the SQS publish fails).
+  attempts  Int     @default(0)
+  lastError String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([tenantId])
+  @@index([publishedAt]) // find rows where publishedAt IS NULL
+  @@map("outbox_events")
+  @@schema("audit")
+}

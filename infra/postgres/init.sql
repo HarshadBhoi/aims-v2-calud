@@ -42,14 +42,25 @@ CREATE EXTENSION IF NOT EXISTS citext;
 CREATE ROLE aims_app WITH LOGIN NOINHERIT PASSWORD :'aims_app_password';
 
 -- aims_migration: schema migrations and seed. BYPASSRLS for setup work.
-CREATE ROLE aims_migration WITH LOGIN NOINHERIT BYPASSRLS PASSWORD :'aims_migration_password';
+-- CREATEDB: needed so Prisma's `migrate dev` can create a transient shadow
+-- database for drift detection (dev only; prod uses `migrate deploy` which
+-- doesn't need this privilege).
+CREATE ROLE aims_migration WITH LOGIN NOINHERIT BYPASSRLS CREATEDB PASSWORD :'aims_migration_password';
 
 -- aims_readonly: analytics and support-mode reads. No writes.
 CREATE ROLE aims_readonly WITH LOGIN NOINHERIT PASSWORD :'aims_readonly_password';
 
--- Grants are applied by migrations once tables exist (Task 1.3+).
--- For now: grant connection to the dev database.
+-- Grants applied per-table by migrations once tables exist (Task 1.3+).
+-- For now, grant connection to the dev database to all three roles.
 GRANT CONNECT ON DATABASE aims_dev TO aims_app, aims_migration, aims_readonly;
+
+-- aims_migration needs schema-creation privileges to run Prisma migrations:
+--   CREATE ON DATABASE → can create new schemas (audit, platform).
+--   CREATE + USAGE ON public → can put types/tables in the default schema.
+-- Postgres 15+ no longer grants CREATE on public to PUBLIC by default,
+-- so this has to be explicit.
+GRANT CREATE ON DATABASE aims_dev TO aims_migration;
+GRANT CREATE, USAGE ON SCHEMA public TO aims_migration;
 
 -- The superadmin role is the one docker-compose logs in as (POSTGRES_USER).
 -- It already has full privileges by default.
