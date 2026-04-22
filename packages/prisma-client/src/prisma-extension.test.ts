@@ -60,8 +60,9 @@ beforeAll(async () => {
 
   const url = container.getConnectionUri();
 
-  // Push schema (creates all tables, extensions, schemas without migration history).
-  execSync("pnpm exec prisma db push --accept-data-loss --skip-generate", {
+  // Apply migrations (creates all tables + extensions + RLS policies).
+  // We use migrate deploy instead of db push so the RLS migration runs.
+  execSync("pnpm exec prisma migrate deploy", {
     cwd: PACKAGE_ROOT,
     env: { ...process.env, DATABASE_URL: url },
     stdio: "inherit",
@@ -246,5 +247,92 @@ describe("tenant isolation extension", () => {
     );
     expect(visibleFromT1).toHaveLength(1);
     expect(visibleFromT1[0]?.id).toBe(tenant1Id);
+  });
+
+  it("RLS blocks cross-tenant reads at the database layer (defence-in-depth)", async () => {
+    const { admin } = requireClients();
+    if (!container) throw new Error("Container not started.");
+
+    // Create an aims_app role inside the test container so we can simulate what
+    // happens when someone bypasses the Prisma extension with a raw connection.
+    // The migration already installed RLS policies and default grants — those
+    // only fire for this role once it exists, via the IF EXISTS guards in the
+    // RLS migration. So we also re-apply grants here for the role we just made.
+    const APP_PASSWORD = "test_app_pw";
+    await admin.$executeRawUnsafe(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'aims_app') THEN
+          CREATE ROLE aims_app WITH LOGIN NOINHERIT PASSWORD '${APP_PASSWORD}';
+        END IF;
+      END $$;
+    `);
+    await admin.$executeRawUnsafe(`GRANT USAGE ON SCHEMA public TO aims_app`);
+    await admin.$executeRawUnsafe(
+      `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO aims_app`,
+    );
+    await admin.$executeRawUnsafe(
+      `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO aims_app`,
+    );
+
+    // Open a raw pg connection as aims_app — completely bypassing Prisma and
+    // therefore the tenant isolation extension.
+    const { Client } = await import("pg");
+    const appClient = new Client({
+      host: container.getHost(),
+      port: container.getPort(),
+      user: "aims_app",
+      password: APP_PASSWORD,
+      database: "aims_test",
+    });
+    await appClient.connect();
+
+    try {
+      // Attempt 1: SELECT without setting app.current_tenant.
+      // RLS policy: "tenantId" = current_setting('app.current_tenant', true).
+      // current_setting returns NULL when unset. NULL = NULL is NULL (not TRUE),
+      // so the policy excludes every row.
+      const resultNoContext = await appClient.query<{ id: string }>(
+        `SELECT id FROM public.users`,
+      );
+      expect(resultNoContext.rows).toHaveLength(0);
+
+      // Attempt 2: SELECT with tenant1's context — sees only tenant1's users.
+      await appClient.query(
+        `SELECT set_config('app.current_tenant', $1, FALSE)`,
+        [tenant1Id],
+      );
+      const resultT1 = await appClient.query<{ "tenantId": string }>(
+        `SELECT "tenantId" FROM public.users`,
+      );
+      expect(resultT1.rows.length).toBeGreaterThan(0);
+      expect(resultT1.rows.every((r) => r.tenantId === tenant1Id)).toBe(true);
+
+      // Attempt 3: swap to tenant2 — see only tenant2's users (no cross-tenant leak).
+      await appClient.query(
+        `SELECT set_config('app.current_tenant', $1, FALSE)`,
+        [tenant2Id],
+      );
+      const resultT2 = await appClient.query<{ "tenantId": string }>(
+        `SELECT "tenantId" FROM public.users`,
+      );
+      expect(resultT2.rows.length).toBeGreaterThan(0);
+      expect(resultT2.rows.every((r) => r.tenantId === tenant2Id)).toBe(true);
+
+      // Attempt 4: INSERT with mismatched tenantId — WITH CHECK blocks it.
+      await appClient.query(
+        `SELECT set_config('app.current_tenant', $1, FALSE)`,
+        [tenant1Id],
+      );
+      await expect(
+        appClient.query(
+          `INSERT INTO public.users (id, "tenantId", email, name, role, status, "failedLoginCount", "createdAt", "updatedAt")
+           VALUES ('rls-hijack-attempt', $1, 'hijack@t2.test', 'Hijack', 'Staff', 'ACTIVE', 0, NOW(), NOW())`,
+          [tenant2Id],
+        ),
+      ).rejects.toThrow(/row-level security|policy/i);
+    } finally {
+      await appClient.end();
+    }
   });
 });

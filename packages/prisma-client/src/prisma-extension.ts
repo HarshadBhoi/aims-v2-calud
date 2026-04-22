@@ -18,7 +18,7 @@
  * and mutate via spread, preserving whatever the caller passed.
  */
 
-import { Prisma } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 
 import {
   CrossTenantViolationError,
@@ -63,43 +63,53 @@ function isRecord(value: unknown): value is QueryArgs {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export const tenantIsolationExtension = Prisma.defineExtension({
-  name: "aims-tenant-isolation",
-  query: {
-    $allModels: {
-      async $allOperations({ model, operation, args, query }) {
-        if (CROSS_TENANT_MODELS.has(model)) {
-          return query(args);
-        }
+/**
+ * Prisma extension, callback form.
+ *
+ * We need access to the extended client so we can issue the SET LOCAL
+ * (via set_config) inside the same transaction as the actual query. The
+ * callback form of `defineExtension` receives the client being extended.
+ */
+export const tenantIsolationExtension = Prisma.defineExtension((baseClient) =>
+  baseClient.$extends({
+    name: "aims-tenant-isolation",
+    query: {
+      $allModels: {
+        async $allOperations({ model, operation, args, query }) {
+          if (CROSS_TENANT_MODELS.has(model)) {
+            return query(args);
+          }
 
-        if (model !== TENANT_MODEL && !TENANT_SCOPED_MODELS.has(model)) {
-          throw new Error(
-            `[aims-tenant-isolation] Model "${model}" is not classified as ` +
-              `tenant-scoped or cross-tenant. Add it to one of the sets in ` +
-              `prisma-extension.ts when you add it to the schema.`,
-          );
-        }
+          if (model !== TENANT_MODEL && !TENANT_SCOPED_MODELS.has(model)) {
+            throw new Error(
+              `[aims-tenant-isolation] Model "${model}" is not classified as ` +
+                `tenant-scoped or cross-tenant. Add it to one of the sets in ` +
+                `prisma-extension.ts when you add it to the schema.`,
+            );
+          }
 
-        const ctx = getTenantContext();
-        if (!ctx) {
-          throw new TenantContextMissingError(model, operation);
-        }
+          const ctx = getTenantContext();
+          if (!ctx) {
+            throw new TenantContextMissingError(model, operation);
+          }
 
-        if (ctx.bypassTenantScope) {
-          return query(args);
-        }
+          if (ctx.bypassTenantScope) {
+            return query(args);
+          }
 
-        return applyTenantScope({
-          model,
-          operation,
-          args: isRecord(args) ? args : undefined,
-          query,
-          tenantId: ctx.tenantId,
-        });
+          return applyTenantScope({
+            model,
+            operation,
+            args: isRecord(args) ? args : undefined,
+            query,
+            tenantId: ctx.tenantId,
+            client: baseClient as unknown as PrismaClient,
+          });
+        },
       },
     },
-  },
-});
+  }),
+);
 
 type ScopeParams = {
   readonly model: string;
@@ -107,13 +117,49 @@ type ScopeParams = {
   readonly args: QueryArgs | undefined;
   readonly query: QueryFn;
   readonly tenantId: string;
+  readonly client: PrismaClient;
 };
 
+/**
+ * Wraps a query so it runs inside a transaction that first sets
+ * `app.current_tenant` via set_config(..., is_local=TRUE). This is the SET
+ * LOCAL equivalent — scoped to the transaction — which RLS policies evaluate
+ * via current_setting('app.current_tenant', true).
+ *
+ * set_config is transaction-local, so it can't leak across connections in a
+ * pool (POOLING.md §2). The overhead is one extra roundtrip per query; for
+ * Slice A this is acceptable. Pool-multiplexing concerns become interesting
+ * only when we introduce PgBouncer (later slice).
+ */
+function runWithRls<T>(
+  client: PrismaClient,
+  tenantId: string,
+  queryPromise: PrismaPromise<T>,
+): Promise<T> {
+  return client
+    .$transaction([
+      client.$executeRawUnsafe(
+        `SELECT set_config('app.current_tenant', $1, TRUE)`,
+        tenantId,
+      ),
+      queryPromise,
+    ])
+    .then(([, result]) => result);
+}
+
+// PrismaPromise is the lazy thenable Prisma returns from model operations.
+// It's `query(args)`'s return type. We alias it to keep signatures explicit.
+type PrismaPromise<T> = Promise<T> & { [Symbol.toStringTag]: "PrismaPromise" };
+
 function applyTenantScope(params: ScopeParams): Promise<unknown> {
-  const { model, operation, args, query, tenantId } = params;
+  const { model, operation, args, query, tenantId, client } = params;
 
   // For the Tenant model, scope by `id` (self-tenancy). All others by `tenantId`.
   const scopeField = model === TENANT_MODEL ? "id" : "tenantId";
+
+  // Helper: runs a prepared, app-layer-scoped query inside the RLS transaction.
+  const withRls = (scopedArgs: unknown): Promise<unknown> =>
+    runWithRls(client, tenantId, query(scopedArgs) as PrismaPromise<unknown>);
 
   switch (operation) {
     // ─── Reads ──────────────────────────────────────────────────────────
@@ -125,12 +171,12 @@ function applyTenantScope(params: ScopeParams): Promise<unknown> {
     case "count":
     case "aggregate":
     case "groupBy": {
-      return query(withScopedWhere(args, scopeField, tenantId));
+      return withRls(withScopedWhere(args, scopeField, tenantId));
     }
 
     // ─── Single-row writes ──────────────────────────────────────────────
     case "create": {
-      return query(
+      return withRls(
         withScopedCreateData({
           args,
           model,
@@ -144,7 +190,9 @@ function applyTenantScope(params: ScopeParams): Promise<unknown> {
 
     case "createMany":
     case "createManyAndReturn": {
-      return query(withScopedCreateManyData({ args, model, operation, tenantId, scopeField }));
+      return withRls(
+        withScopedCreateManyData({ args, model, operation, tenantId, scopeField }),
+      );
     }
 
     // ─── Updates / deletes / upserts ────────────────────────────────────
@@ -152,12 +200,12 @@ function applyTenantScope(params: ScopeParams): Promise<unknown> {
     case "updateMany":
     case "delete":
     case "deleteMany": {
-      return query(withScopedWhere(args, scopeField, tenantId));
+      return withRls(withScopedWhere(args, scopeField, tenantId));
     }
 
     case "upsert": {
       const withWhere = withScopedWhere(args, scopeField, tenantId);
-      return query(
+      return withRls(
         withScopedCreateData({
           args: withWhere,
           model,
