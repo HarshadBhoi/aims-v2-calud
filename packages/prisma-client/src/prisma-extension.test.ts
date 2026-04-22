@@ -336,3 +336,150 @@ describe("tenant isolation extension", () => {
     }
   });
 });
+
+describe("audit log hash chain", () => {
+  type VerifyResult = {
+    ok: boolean;
+    broken_at: bigint | null;
+    total_rows: bigint;
+    reason: string;
+  };
+
+  async function verifyChain(): Promise<VerifyResult> {
+    const { admin } = requireClients();
+    const rows = await admin.$queryRawUnsafe<VerifyResult[]>(
+      `SELECT ok, broken_at, total_rows, reason FROM audit.verify_chain()`,
+    );
+    if (!rows[0]) throw new Error("verify_chain() returned no rows");
+    return rows[0];
+  }
+
+  it("writes an audit row for each engagement mutation (CREATE, UPDATE)", async () => {
+    const { admin, tenant } = requireClients();
+
+    // Count audit rows for this tenant before, and after each mutation.
+    const beforeRows = await admin.auditLog.count({
+      where: { tenantId: tenant1Id, entityType: "engagements" },
+    });
+
+    const lead = await admin.user.create({
+      data: { tenantId: tenant1Id, email: "chain-lead@t1.test", name: "Chain Lead", role: "Senior" },
+    });
+
+    const engagement = await runWithTenantContext({ tenantId: tenant1Id }, () =>
+      tenant.engagement.create({
+        // @ts-expect-error — tenantId intentionally omitted; the extension
+        // injects it at runtime. Prisma's generated types don't know that.
+        data: {
+          name: "Chain Test Engagement",
+          auditeeName: "ChainCo",
+          fiscalPeriod: "FY26 Q1",
+          periodStart: new Date("2026-01-01"),
+          periodEnd: new Date("2026-03-31"),
+          leadUserId: lead.id,
+        },
+      }),
+    );
+
+    await runWithTenantContext({ tenantId: tenant1Id }, () =>
+      tenant.engagement.update({
+        where: { id: engagement.id },
+        data: { name: "Chain Test Engagement (renamed)" },
+      }),
+    );
+
+    const afterRows = await admin.auditLog.count({
+      where: { tenantId: tenant1Id, entityType: "engagements" },
+    });
+
+    // One CREATE + one UPDATE row.
+    expect(afterRows - beforeRows).toBeGreaterThanOrEqual(2);
+  });
+
+  it("chain verifies after normal mutations", async () => {
+    const result = await verifyChain();
+    expect(result.ok).toBe(true);
+    expect(result.total_rows).toBeGreaterThan(0n);
+  });
+
+  it("detects a tampered row (content_hash mismatch)", async () => {
+    const { admin } = requireClients();
+
+    // Pick any audit row and tamper with its afterData.
+    const target = await admin.auditLog.findFirst({
+      where: { entityType: "engagements" },
+      orderBy: { chainPosition: "asc" },
+    });
+    if (!target) throw new Error("no audit rows to tamper with");
+
+    const originalAfter = target.afterData;
+
+    // Note: matching by id alone — the PK is (id, loggedAt) for partitioning,
+    // but id is a UUID (gen_random_uuid in the trigger), effectively unique
+    // on its own. Date.toISOString() can't round-trip timestamptz's microsecond
+    // precision, so loggedAt equality would miss the row.
+    const tamperedCount = await admin.$executeRawUnsafe<number>(
+      `UPDATE audit.audit_log SET "afterData" = '{"tampered":true}'::jsonb WHERE "id" = $1`,
+      target.id,
+    );
+    expect(tamperedCount).toBe(1);
+
+    const tampered = await verifyChain();
+    expect(tampered.ok).toBe(false);
+    expect(tampered.broken_at).toBe(target.chainPosition);
+    expect(tampered.reason).toMatch(/content_hash mismatch/);
+
+    // Restore.
+    await admin.$executeRawUnsafe(
+      `UPDATE audit.audit_log SET "afterData" = $1::jsonb WHERE "id" = $2`,
+      JSON.stringify(originalAfter),
+      target.id,
+    );
+
+    const restored = await verifyChain();
+    expect(restored.ok).toBe(true);
+  });
+
+  it("detects a broken chain link (previous_hash mismatch)", async () => {
+    const { admin } = requireClients();
+
+    // Grab the last two chain rows — tamper with the earlier row's content_hash
+    // directly (not via verify_chain recompute). This should make the NEXT row's
+    // previousHash not match.
+    const rows = await admin.auditLog.findMany({
+      orderBy: { chainPosition: "desc" },
+      take: 2,
+    });
+    if (rows.length < 2) throw new Error("need at least 2 audit rows to test link mismatch");
+
+    const earlier = rows[1];
+    const later = rows[0];
+    if (!earlier || !later) throw new Error("unexpected rows shape");
+
+    const originalContentHash = earlier.contentHash;
+
+    // Directly corrupt the earlier row's stored content_hash (not its data).
+    // This row's content still hashes to originalContentHash when recomputed,
+    // so the content_hash check fails at the earlier row.
+    const mutationCount = await admin.$executeRawUnsafe<number>(
+      `UPDATE audit.audit_log SET "contentHash" = $1 WHERE "id" = $2`,
+      "deadbeef".repeat(8), // wrong but valid-shaped hash
+      earlier.id,
+    );
+    expect(mutationCount).toBe(1);
+
+    const broken = await verifyChain();
+    expect(broken.ok).toBe(false);
+    expect(broken.broken_at).toBe(earlier.chainPosition);
+
+    // Restore.
+    await admin.$executeRawUnsafe(
+      `UPDATE audit.audit_log SET "contentHash" = $1 WHERE "id" = $2`,
+      originalContentHash,
+      earlier.id,
+    );
+
+    const restored = await verifyChain();
+    expect(restored.ok).toBe(true);
+  });
+});
