@@ -13,10 +13,16 @@
     "build": "tsc -b",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "echo \"(tests added in Task 1.6 — ALE round-trip unit test)\" && exit 0",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "clean": "rm -rf dist .tsbuildinfo"
   },
   "dependencies": {
-    "@aws-sdk/client-kms": "^3.658.0"
+    "@aws-sdk/client-kms": "^3.658.0",
+    "lru-cache": "^11.0.1"
+  },
+  "devDependencies": {
+    "testcontainers": "^10.13.2",
+    "vitest": "^2.1.3"
   }
 }

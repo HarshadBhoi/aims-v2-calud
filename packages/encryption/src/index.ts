@@ -1,17 +1,54 @@
 /**
- * @aims/encryption
+ * @aims/encryption — Application-Layer Encryption (ALE) per ADR-0001.
  *
- * Application-Layer Encryption (ALE) per ADR-0001.
+ * Public API:
+ *   - createEncryptionModule(options)  — main factory
+ *   - createPrismaDekStore(prisma)      — default DekStore impl (Prisma-backed)
+ *   - encryptRaw / decryptRaw           — pure AES-GCM primitives (low-level)
+ *   - DekStore / StoredDek              — types for custom stores
  *
- * Plaintext never leaves the application process. Each tenant has its own
- * Data Encryption Key (DEK) wrapped by a KMS Key Encryption Key (KEK).
- * DEK material is fetched lazily, cached in-process, and rotated per policy.
+ * Typical wiring in an app:
  *
- * SLICE A TASK: This is a placeholder. Real implementation arrives in:
- *   - Task 1.6: encrypt/decrypt via tenant DEK; deterministic variant for
- *              searchable equality; LocalStack KMS mocks in dev.
+ *   import { KMSClient } from "@aws-sdk/client-kms";
+ *   import { PrismaClient } from "@prisma/client";
+ *   import { createEncryptionModule, createPrismaDekStore } from "@aims/encryption";
  *
- * See VERTICAL-SLICE-PLAN.md §4 Week 1 for sequencing.
+ *   const prisma = new PrismaClient();
+ *   const kmsClient = new KMSClient({
+ *     endpoint: process.env["AWS_ENDPOINT_URL"],
+ *     region: process.env["AWS_REGION"],
+ *   });
+ *
+ *   const encryption = createEncryptionModule({
+ *     kmsClient,
+ *     masterKeyArn: process.env["AWS_KMS_MASTER_KEY_ALIAS"]!,
+ *     dekStore: createPrismaDekStore(prisma),
+ *   });
+ *
+ *   const envelope = await encryption.encryptJson(tenantId, { foo: "secret" });
+ *   // store envelope as Bytes in Prisma
+ *
+ *   const roundtrip = await encryption.decryptJson<{ foo: string }>(tenantId, envelope);
  */
 
-export const PLACEHOLDER = true as const;
+export {
+  createEncryptionModule,
+  type EncryptionModule,
+  type EncryptionModuleOptions,
+} from "./encryption";
+
+export { createPrismaDekStore, type PrismaLike } from "./prisma-dek-store";
+
+export type { DekStore, StoredDek } from "./types";
+
+export {
+  DecryptionError,
+  EnvelopeError,
+  KEY_LENGTH,
+  MIN_ENVELOPE_LENGTH,
+  NONCE_LENGTH,
+  TAG_LENGTH,
+  VERSION_BYTE,
+  decryptRaw,
+  encryptRaw,
+} from "./crypto";

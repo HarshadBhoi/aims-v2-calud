@@ -203,6 +203,16 @@ importers:
       '@aws-sdk/client-kms':
         specifier: ^3.658.0
         version: 3.1035.0
+      lru-cache:
+        specifier: ^11.0.1
+        version: 11.3.5
+    devDependencies:
+      testcontainers:
+        specifier: ^10.13.2
+        version: 10.28.0
+      vitest:
+        specifier: ^2.1.3
+        version: 2.1.9(@types/node@22.19.17)(lightningcss@1.32.0)(terser@5.46.1)
 
   packages/prisma-client:
     dependencies:
@@ -3792,6 +3802,10 @@ packages:
 
   lru-cache@10.4.3:
     resolution: {integrity: sha512-JNAzZcXrCt42VGLuYz0zfAzDfAvJWW6AfYlDBQyDV5DClI2m5sAmK+OIO7s59XfsRsWHp02jAJrRadPRGTt6SQ==}
+
+  lru-cache@11.3.5:
+    resolution: {integrity: sha512-NxVFwLAnrd9i7KUBxC4DrUhmgjzOs+1Qm50D3oF1/oL+r1NpZ4gA7xvG0/zJ8evR7zIKn4vLf7qTNduWFtCrRw==}
+    engines: {node: 20 || >=22}
 
   luxon@3.5.0:
     resolution: {integrity: sha512-rh+Zjr6DNfUYR3bPwJEnuwDdqMbxZW7LOQfUN4B54+Cl+0o5zaU9RJ6bcidfDtC1cWCZXQ+nvX8bf6bAji37QQ==}
@@ -9428,6 +9442,8 @@ snapshots:
   loupe@3.2.1: {}
 
   lru-cache@10.4.3: {}
+
+  lru-cache@11.3.5: {}
 
   luxon@3.5.0: {}
 

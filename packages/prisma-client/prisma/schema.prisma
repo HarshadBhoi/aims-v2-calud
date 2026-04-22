@@ -131,6 +131,7 @@ model Tenant {
 
   users       User[]
   engagements Engagement[]
+  tenantKey   TenantKey?
 
   createdAt DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @db.Timestamptz(6)
@@ -138,6 +139,24 @@ model Tenant {
 
   @@index([status])
   @@map("tenants")
+  @@schema("public")
+}
+
+/// Per-tenant Data Encryption Key (DEK), wrapped by a KMS master KEK (ADR-0001).
+/// Plaintext DEK never touches the database — only the wrapped form is stored.
+/// The encryption module (packages/encryption) unwraps via KMS on cache miss.
+model TenantKey {
+  tenantId String @id
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  kmsKeyArn  String // alias/aims-dev-master or full ARN
+  wrappedDek Bytes // DEK encrypted by the master KEK
+  dekVersion Int   @default(1) // increments on rotation
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(6)
+  rotatedAt DateTime? @db.Timestamptz(6)
+
+  @@map("tenant_keys")
   @@schema("public")
 }
 
