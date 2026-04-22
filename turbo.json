@@ -14,7 +14,7 @@
     },
     "typecheck": {
       "dependsOn": ["^build"],
-      "outputs": ["*.tsbuildinfo"],
+      "outputs": [],
       "inputs": ["src/**/*.ts", "src/**/*.tsx", "app/**/*.ts", "app/**/*.tsx", "tsconfig.json", "../../tsconfig.base.json"]
     },
     "lint": {

@@ -23,7 +23,6 @@ async function bootstrap(): Promise<void> {
   });
 
   const logger = app.get(AppModule).constructor.name;
-  // eslint-disable-next-line no-console
   console.warn(`[${logger}] AIMS worker started (scaffold — no consumers yet)`);
 
   // Keep the process alive. Real implementations attach SQS pollers here.
@@ -33,7 +32,6 @@ async function bootstrap(): Promise<void> {
 }
 
 bootstrap().catch((err: unknown) => {
-  // eslint-disable-next-line no-console
   console.error("Worker bootstrap failed:", err);
-  process.exit(1);
+  throw err;
 });

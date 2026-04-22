@@ -24,6 +24,13 @@ export default [
       "**/*.generated.ts",
       "**/*.d.ts",
       "aims-v2-platform/**", // if backup remnants ever reappear
+
+      // Config files — not in any tsconfig.include, so skip type-aware lint.
+      // Revisit once we start putting real logic into them.
+      "**/*.config.{js,mjs,cjs,ts}",
+      "**/*.config.*.{js,mjs,cjs,ts}",
+      "commitlint.config.js",
+      "eslint.config.js",
     ],
   },
 
@@ -217,11 +224,4 @@ export default [
     },
   },
 
-  // ─── Config files (eslint/prettier/etc.) ─────────────────────────────
-  {
-    files: ["*.config.{js,ts,mjs}", "*.config.*.{js,ts,mjs}"],
-    rules: {
-      "import/no-default-export": "off",
-    },
-  },
 ];

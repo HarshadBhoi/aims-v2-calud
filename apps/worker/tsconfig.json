@@ -14,6 +14,7 @@
     "experimentalDecorators": true,
     "verbatimModuleSyntax": false,
     "isolatedModules": false,
+    "importHelpers": false,
     "lib": ["ES2023"],
     "types": ["node"]
   },

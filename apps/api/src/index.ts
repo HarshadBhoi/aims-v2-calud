@@ -26,10 +26,6 @@ const HOST = process.env["HOST"] ?? "0.0.0.0";
 const app = Fastify({
   logger: {
     level: process.env["LOG_LEVEL"] ?? "info",
-    transport:
-      process.env["NODE_ENV"] === "development"
-        ? { target: "pino-pretty", options: { colorize: true, translateTime: "HH:MM:ss" } }
-        : undefined,
   },
 });
 
@@ -57,5 +53,5 @@ try {
   app.log.info(`AIMS API listening on http://${HOST}:${PORT.toString()}`);
 } catch (error) {
   app.log.error(error);
-  process.exit(1);
+  throw error;
 }
