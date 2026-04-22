@@ -1,0 +1,55 @@
+-- AIMS v2 — Postgres bootstrap
+--
+-- Runs once when the Postgres container initializes its data directory.
+-- Adapted from database/policies/roles.sql (canonical).
+--
+-- Creates:
+--   extensions required by the slice a schema (uuid generation, trigram search, citext)
+--   four roles per ADR-0002 two-layer tenant isolation:
+--     aims_app         runtime role — RLS active, lowest privilege
+--     aims_migration   DDL + migrations — can create tables, bypass RLS for setup
+--     aims_readonly    analytics + support-mode reads (future)
+--     aims_superadmin  break-glass only — bypasses RLS, never used by the app
+--
+-- Passwords come from docker-compose env vars (substituted by the shell when
+-- psql invokes this file via docker-entrypoint).
+
+-- ─── Extensions ──────────────────────────────────────────────────────────────
+-- uuid-ossp: legacy (PG 13+ has gen_random_uuid() built-in, but keep in case
+--            migrations use uuid_generate_v4()).
+-- pg_trgm:  trigram index for finding/engagement search.
+-- citext:   case-insensitive emails.
+-- pgcrypto: NOT installed here — rejected per ADR-0001 for field encryption.
+--           (application-layer encryption via @aims/encryption instead.)
+
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS citext;
+
+-- ─── Roles ──────────────────────────────────────────────────────────────────
+-- \set reads environment variables via the postgres docker-entrypoint mechanism.
+
+\set aims_app_password `echo "$AIMS_APP_PASSWORD"`
+\set aims_migration_password `echo "$AIMS_MIGRATION_PASSWORD"`
+\set aims_readonly_password `echo "$AIMS_READONLY_PASSWORD"`
+
+-- init.sql runs only when the Postgres data directory is empty (first-time
+-- container init via docker-entrypoint). No idempotence needed; keep these
+-- CREATE ROLE statements at top level so psql client-side :'var' substitution
+-- applies (substitution does NOT happen inside dollar-quoted DO blocks).
+
+-- aims_app: application runtime. Lowest privilege. RLS applies.
+CREATE ROLE aims_app WITH LOGIN NOINHERIT PASSWORD :'aims_app_password';
+
+-- aims_migration: schema migrations and seed. BYPASSRLS for setup work.
+CREATE ROLE aims_migration WITH LOGIN NOINHERIT BYPASSRLS PASSWORD :'aims_migration_password';
+
+-- aims_readonly: analytics and support-mode reads. No writes.
+CREATE ROLE aims_readonly WITH LOGIN NOINHERIT PASSWORD :'aims_readonly_password';
+
+-- Grants are applied by migrations once tables exist (Task 1.3+).
+-- For now: grant connection to the dev database.
+GRANT CONNECT ON DATABASE aims_dev TO aims_app, aims_migration, aims_readonly;
+
+-- The superadmin role is the one docker-compose logs in as (POSTGRES_USER).
+-- It already has full privileges by default.

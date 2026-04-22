@@ -1,0 +1,102 @@
+# AIMS v2 — Local development infra (Slice A)
+#
+# Services:
+#   postgres    PostgreSQL 16 + roles per database/policies/roles.sql
+#   localstack  KMS + SQS + S3 mocks (matches ADR-0001, 0004)
+#   redis       Session blocklist cache (ADR-0005)
+#   mailpit     SMTP capture (notifications, magic links)
+#
+# Usage:
+#   pnpm infra:up     bring everything up
+#   pnpm infra:down   stop (keeps volumes)
+#   pnpm infra:reset  stop + nuke volumes (fresh DB)
+#   pnpm infra:logs   follow logs
+#
+# Real AWS is a later slice. See VERTICAL-SLICE-PLAN.md §6.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: aims-postgres
+    environment:
+      POSTGRES_DB: aims_dev
+      POSTGRES_USER: aims_superadmin
+      POSTGRES_PASSWORD: dev_superadmin_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      # Passwords for the other roles (read by init.sql via psql \set)
+      AIMS_APP_PASSWORD: dev_app_password
+      AIMS_MIGRATION_PASSWORD: dev_migration_password
+      AIMS_READONLY_PASSWORD: dev_readonly_password
+    ports:
+      # Host 5433 → container 5432 (5432 taken by another Postgres on this machine).
+      # From the app's perspective the URL is localhost:5433; inside the container
+      # Postgres still listens on 5432. Change host port here if 5433 is also taken.
+      - "5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aims_superadmin -d aims_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    command:
+      - postgres
+      - -c
+      - log_statement=none
+      - -c
+      - log_min_duration_statement=500
+      - -c
+      - max_connections=100
+      - -c
+      - shared_buffers=256MB
+
+  localstack:
+    image: localstack/localstack:3.8
+    container_name: aims-localstack
+    environment:
+      SERVICES: kms,sqs,s3
+      DEBUG: 0
+      PERSISTENCE: 1
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      LAMBDA_EXECUTOR: local
+    ports:
+      - "4566:4566"
+    volumes:
+      - localstack-data:/var/lib/localstack
+      - ./localstack/init:/etc/localstack/init/ready.d:ro
+
+  redis:
+    image: redis:7-alpine
+    container_name: aims-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: aims-mailpit
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+
+volumes:
+  postgres-data:
+    name: aims-postgres-data
+  localstack-data:
+    name: aims-localstack-data
+  redis-data:
+    name: aims-redis-data
