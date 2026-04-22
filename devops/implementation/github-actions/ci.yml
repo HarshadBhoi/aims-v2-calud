@@ -1,0 +1,356 @@
+# .github/workflows/ci.yml
+#
+# REFERENCE IMPLEMENTATION — Pull Request CI for AIMS v2.
+#
+# Runs on every PR targeting main. Must pass for merge (branch-protected).
+# Jobs parallelize where possible. OIDC to AWS; no long-lived secrets.
+# Target total wall time: < 12 min on warm cache.
+
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+
+concurrency:
+  # Max one run per PR. Push cancels in-flight CI.
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write        # OIDC to AWS
+  contents: read
+  pull-requests: write   # Comment on PRs
+  checks: write          # Publish check results
+  security-events: write # Upload SARIF
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "9"
+  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+  TURBO_TEAM: aims-v2
+  TURBO_API: https://turbo-cache.internal.aims.io
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Set up shared cache. Other jobs depend on this so we install once.
+  # ─────────────────────────────────────────────────────────────────────────
+  setup:
+    name: Setup
+    runs-on: ubuntu-24.04
+    outputs:
+      pnpm-store: ${{ steps.pnpm-cache.outputs.path }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }   # full history for changelog/diff tools
+      - uses: pnpm/action-setup@v3
+        with: { version: ${{ env.PNPM_VERSION }} }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+      - id: pnpm-cache
+        run: echo "path=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+      - run: pnpm install --frozen-lockfile
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Static quality — lint, typecheck, format
+  # ─────────────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    needs: setup
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+      - run: pnpm turbo lint --cache-dir=.turbo
+      - run: pnpm format:check
+
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-24.04
+    needs: setup
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+      - run: pnpm turbo typecheck --cache-dir=.turbo
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Tests — unit + component (sharded)
+  # ─────────────────────────────────────────────────────────────────────────
+  test-unit:
+    name: Unit tests (${{ matrix.package }})
+    runs-on: ubuntu-24.04
+    needs: setup
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [validation, standard-packs, api, web]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+      - run: pnpm --filter=${{ matrix.package }} test -- --coverage --reporter=junit
+      - uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./packages/${{ matrix.package }}/coverage/coverage-final.json
+          flags: ${{ matrix.package }}
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-results-${{ matrix.package }}
+          path: packages/${{ matrix.package }}/coverage/junit.xml
+
+  test-component:
+    name: Component tests (web)
+    runs-on: ubuntu-24.04
+    needs: setup
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+      - run: pnpm --filter=web test:component -- --coverage
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Build + bundle budgets
+  # ─────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build
+    runs-on: ubuntu-24.04
+    needs: setup
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+      - run: pnpm turbo build --cache-dir=.turbo
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: |
+            apps/web/.next
+            apps/api/dist
+          retention-days: 1
+
+  bundle-budget:
+    name: Bundle budget
+    runs-on: ubuntu-24.04
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: build-output }
+      - uses: ./.github/actions/install
+      - run: node scripts/check-bundles.js
+      - name: Comment budget diff on PR
+        if: github.event_name == 'pull_request'
+        run: pnpm analyze:comment
+        env: { GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Accessibility
+  # ─────────────────────────────────────────────────────────────────────────
+  a11y:
+    name: Accessibility (axe-core)
+    runs-on: ubuntu-24.04
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: build-output }
+      - uses: ./.github/actions/install
+      - uses: microsoft/playwright-github-action@v1
+      - run: pnpm --filter=web test:a11y
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Security — SAST, SCA, secrets, containers, IaC
+  # ─────────────────────────────────────────────────────────────────────────
+  sast-semgrep:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/owasp-top-ten
+            p/typescript
+            p/nodejs
+            p/react
+            p/secrets
+            r/generic.secrets
+
+  sast-codeql:
+    name: SAST (CodeQL)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with: { languages: "javascript-typescript" }
+      - uses: github/codeql-action/analyze@v3
+
+  sca:
+    name: SCA (Snyk + pnpm audit)
+    runs-on: ubuntu-24.04
+    needs: setup
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+      # pnpm audit — fail on high+ only; moderate logged
+      - run: pnpm audit --audit-level=high --prod || exit 1
+      - uses: snyk/actions/node@master
+        env: { SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }} }
+        with:
+          args: --severity-threshold=high --all-projects
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_SUMMARY: "true"
+
+  iac-scan:
+    name: IaC scan (tfsec + checkov)
+    runs-on: ubuntu-24.04
+    if: contains(github.event.pull_request.changed_files, 'terraform/')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aquasecurity/tfsec-action@v1
+        with:
+          working_directory: ./terraform
+          soft_fail: false
+      - uses: bridgecrewio/checkov-action@master
+        with:
+          directory: terraform/
+          framework: terraform
+          soft_fail: false
+
+  container-scan:
+    name: Container scan (Trivy)
+    runs-on: ubuntu-24.04
+    if: contains(github.event.pull_request.changed_files, 'docker/')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build images
+        run: |
+          docker build -f docker/api.Dockerfile -t aims-api:pr .
+          docker build -f docker/web.Dockerfile -t aims-web:pr .
+      - uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "aims-api:pr"
+          severity: "CRITICAL,HIGH"
+          exit-code: "1"
+          ignore-unfixed: true
+          format: "sarif"
+          output: "trivy-api.sarif"
+      - uses: github/codeql-action/upload-sarif@v3
+        with: { sarif_file: "trivy-api.sarif" }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Preview environment — deploy + E2E smoke
+  # ─────────────────────────────────────────────────────────────────────────
+  preview-deploy:
+    name: Preview deploy
+    runs-on: ubuntu-24.04
+    needs: [build, lint, typecheck, test-unit, sast-semgrep]
+    if: github.event_name == 'pull_request'
+    concurrency:
+      group: preview-pr-${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_DEV_ACCOUNT_ID }}:role/github-ci-preview
+          aws-region: us-east-1
+      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+      - name: Build + push images (PR tag)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/api.Dockerfile
+          push: true
+          tags: |
+            ${{ vars.ECR_REGISTRY }}/aims/api:pr-${{ github.event.pull_request.number }}-${{ github.sha }}
+          cache-from: type=registry,ref=${{ vars.ECR_REGISTRY }}/aims/api:buildcache
+          cache-to: type=registry,ref=${{ vars.ECR_REGISTRY }}/aims/api:buildcache,mode=max
+          platforms: linux/amd64
+      - name: Deploy to preview cluster
+        run: |
+          aws eks update-kubeconfig --name eks-dev-us-east-1 --region us-east-1
+          helm upgrade --install pr-${{ github.event.pull_request.number }} \
+            infrastructure/helm/aims-v2 \
+            --namespace pr-${{ github.event.pull_request.number }} \
+            --create-namespace \
+            --values infrastructure/helm/aims-v2/values-preview.yaml \
+            --set image.tag=pr-${{ github.event.pull_request.number }}-${{ github.sha }} \
+            --wait --timeout=5m
+      - name: Comment preview URL
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNum = context.payload.pull_request.number;
+            const url = `https://pr-${prNum}.preview.aims.io`;
+            github.rest.issues.createComment({
+              issue_number: prNum,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `✨ Preview deployed: ${url}\n\nWill be torn down when this PR is closed.`
+            });
+
+  e2e-smoke:
+    name: E2E smoke (Playwright)
+    runs-on: ubuntu-24.04
+    needs: preview-deploy
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('pnpm-lock.yaml') }}
+      - run: pnpm --filter=e2e exec playwright install --with-deps chromium
+      - name: Run smoke tests against preview
+        env:
+          E2E_BASE_URL: https://pr-${{ github.event.pull_request.number }}.preview.aims.io
+          E2E_TEST_TENANT: acme-preview
+        run: pnpm --filter=e2e test:smoke
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: e2e/playwright-report
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Gate — only succeeds if all checks green
+  # ─────────────────────────────────────────────────────────────────────────
+  ci-pass:
+    name: CI Pass
+    runs-on: ubuntu-24.04
+    needs:
+      - lint
+      - typecheck
+      - test-unit
+      - test-component
+      - build
+      - bundle-budget
+      - a11y
+      - sast-semgrep
+      - sast-codeql
+      - sca
+      - secret-scan
+      - e2e-smoke
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          if echo "${{ toJSON(needs) }}" | jq -e 'any(.[]; .result != "success")' > /dev/null; then
+            echo "One or more CI checks failed"
+            exit 1
+          fi

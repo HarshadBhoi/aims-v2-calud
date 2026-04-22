@@ -1,0 +1,1030 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aims.dev/schemas/standard-pack/1.1.0.json",
+  "title": "AIMS Standard Pack",
+  "description": "Schema for AIMS v2 audit standard pack configuration. Schema v1.1.0 adds packType discriminator (methodology / control_framework / regulatory_overlay) and semanticElementMappings for multi-standard engagement support. See references/multi-standard-design.md. NOTE: This JSON Schema was hand-updated for the v1.1.0 refactor; for full fidelity with the TypeScript source-of-truth (standard-pack-schema.ts), regenerate via codegen tooling (e.g., ts-json-schema-generator) — the $defs block below is not yet regenerated and tracks the v1.0.0 shape minus the now-optional methodology-specific fields.",
+  "type": "object",
+  "required": [
+    "code",
+    "version",
+    "schemaVersion",
+    "packType",
+    "meta",
+    "status",
+    "terminology",
+    "semanticElementMappings",
+    "crosswalks",
+    "dependencies",
+    "applicability"
+  ],
+  "allOf": [
+    {
+      "description": "Methodology packs require the full methodology content set.",
+      "if": {
+        "properties": { "packType": { "const": "methodology" } }
+      },
+      "then": {
+        "required": [
+          "engagementTypes",
+          "phases",
+          "findingElements",
+          "findingClassifications",
+          "checklists",
+          "independenceRules",
+          "cpeRules",
+          "workflows",
+          "reportDefinitions",
+          "templates",
+          "riskRatings",
+          "evidenceRules"
+        ]
+      }
+    },
+    {
+      "description": "Control framework packs require a control library.",
+      "if": {
+        "properties": { "packType": { "const": "control_framework" } }
+      },
+      "then": {
+        "required": ["controls", "controlCategories"]
+      }
+    },
+    {
+      "description": "Regulatory overlay packs should declare at least one delta (additional elements, reports, or rule overrides) — enforced via warn-level check in Layer 5 validator.",
+      "if": {
+        "properties": { "packType": { "const": "regulatory_overlay" } }
+      },
+      "then": {
+        "anyOf": [
+          { "required": ["additionalFindingElements"] },
+          { "required": ["additionalReports"] },
+          { "required": ["additionalChecklists"] },
+          { "required": ["ruleOverrides"] }
+        ]
+      }
+    }
+  ],
+  "properties": {
+    "code": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]*$",
+      "description": "Machine-readable identifier"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Pack version"
+    },
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.1.0"
+    },
+    "packType": {
+      "type": "string",
+      "enum": ["methodology", "control_framework", "regulatory_overlay"],
+      "description": "Three-tier pack taxonomy. See references/multi-standard-design.md §3 Decision 1."
+    },
+    "meta": { "$ref": "#/$defs/StandardMeta" },
+    "status": {
+      "type": "string",
+      "enum": [
+        "PROPOSED",
+        "FINAL_PENDING",
+        "EFFECTIVE",
+        "TRANSITIONING",
+        "SUPERSEDED",
+        "WITHDRAWN",
+        "IN_LITIGATION"
+      ]
+    },
+    "terminology": { "$ref": "#/$defs/TerminologyMap" },
+    "semanticElementMappings": {
+      "type": "array",
+      "description": "Maps this pack's finding-element codes to canonical semantic codes. May be empty for packs that don't define findings.",
+      "items": {
+        "type": "object",
+        "required": ["semanticCode", "packElementCode", "equivalenceStrength"],
+        "properties": {
+          "semanticCode": {
+            "type": "string",
+            "description": "Canonical semantic code (e.g., CRITERIA, CONDITION, CAUSE, EFFECT, RECOMMENDATION, EVIDENCE, NC_CLAUSE, QUESTIONED_COST, CAPABILITY_TARGET, etc.). Extensible — packs may declare new codes."
+          },
+          "packElementCode": {
+            "type": "string",
+            "description": "Must match a findingElements[].code in this pack (or an additionalFindingElements[].code for overlay packs)."
+          },
+          "equivalenceStrength": {
+            "type": "string",
+            "enum": ["exact", "close", "overlapping", "divergent"]
+          },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "controls": {
+      "type": "array",
+      "description": "Control library — required for packType === 'control_framework'. Each item is a testable control."
+    },
+    "controlCategories": {
+      "type": "array",
+      "description": "Logical grouping of controls."
+    },
+    "additionalFindingElements": {
+      "type": "array",
+      "description": "For regulatory_overlay packs — extra finding-element fields added on top of the host methodology.",
+      "items": { "$ref": "#/$defs/FindingElement" }
+    },
+    "additionalReports": {
+      "type": "array",
+      "description": "For regulatory_overlay packs — extra report definitions layered on top of host methodology.",
+      "items": { "$ref": "#/$defs/ReportDefinition" }
+    },
+    "additionalChecklists": {
+      "type": "array",
+      "description": "For regulatory_overlay packs — extra checklists."
+    },
+    "ruleOverrides": {
+      "type": "object",
+      "description": "For regulatory_overlay packs — specific rule overrides fed into the strictness resolver.",
+      "properties": {
+        "documentationRetentionYears": { "type": "number" },
+        "independenceCoolingOffYears": { "type": "number" },
+        "cpeHoursPer2Years": { "type": "number" },
+        "governmentalCpeHours": { "type": "number" },
+        "peerReviewCycleYears": { "type": "number" },
+        "additional": { "type": "object" }
+      }
+    },
+    "engagementTypes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/EngagementType" }
+    },
+    "phases": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "$ref": "#/$defs/Phase" }
+    },
+    "findingElements": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/FindingElement" }
+    },
+    "findingClassifications": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/ClassificationScheme" }
+    },
+    "checklists": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Checklist" }
+    },
+    "independenceRules": { "$ref": "#/$defs/IndependenceRules" },
+    "cpeRules": { "$ref": "#/$defs/CPERules" },
+    "workflows": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/Workflow" }
+    },
+    "reportDefinitions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/ReportDefinition" }
+    },
+    "templates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Template" }
+    },
+    "crosswalks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Crosswalk" }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Dependency" }
+    },
+    "applicability": { "$ref": "#/$defs/Applicability" },
+    "sectorOverlays": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/SectorOverlay" }
+    },
+    "riskRatings": { "$ref": "#/$defs/RiskRatingScheme" },
+    "evidenceRules": { "$ref": "#/$defs/EvidenceRules" },
+    "extensions": { "type": "object" }
+  },
+  "$defs": {
+    "StandardMeta": {
+      "type": "object",
+      "required": [
+        "name",
+        "issuingBody",
+        "publishedYear",
+        "effectiveFrom",
+        "earlyAdoptionAllowed",
+        "description",
+        "primarySectors",
+        "jurisdictions"
+      ],
+      "properties": {
+        "name": { "type": "string" },
+        "commonName": { "type": "string" },
+        "issuingBody": {
+          "type": "object",
+          "required": ["name", "abbreviation", "country"],
+          "properties": {
+            "name": { "type": "string" },
+            "abbreviation": { "type": "string" },
+            "country": { "type": "string" },
+            "url": { "type": "string", "format": "uri" }
+          }
+        },
+        "referenceUrl": { "type": "string", "format": "uri" },
+        "publishedYear": { "type": "integer", "minimum": 1900 },
+        "effectiveFrom": { "type": "string", "format": "date" },
+        "effectiveTo": { "type": "string", "format": "date" },
+        "earlyAdoptionAllowed": { "type": "boolean" },
+        "previousVersion": { "type": "string" },
+        "transitionDeadline": { "type": "string", "format": "date" },
+        "description": { "type": "string", "minLength": 20 },
+        "primarySectors": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "US_FEDERAL_GOVERNMENT",
+              "US_STATE_LOCAL_GOVERNMENT",
+              "INTERNATIONAL_GOVERNMENT",
+              "PUBLIC_COMPANY",
+              "PRIVATE_COMPANY",
+              "NONPROFIT",
+              "HEALTHCARE",
+              "FINANCIAL_SERVICES",
+              "EDUCATION",
+              "MANUFACTURING",
+              "TECHNOLOGY",
+              "ENERGY_UTILITIES",
+              "DEFENSE_CONTRACTOR",
+              "ALL_SECTORS"
+            ]
+          }
+        },
+        "jurisdictions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": ["US", "EU", "UK", "CA", "AU", "IN", "JP", "CN", "BR", "GLOBAL"]
+          }
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "Term": {
+      "type": "object",
+      "required": ["label"],
+      "properties": {
+        "label": { "type": "string" },
+        "shortLabel": { "type": "string" },
+        "plural": { "type": "string" },
+        "helpText": { "type": "string" },
+        "aliases": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "TerminologyMap": {
+      "type": "object",
+      "required": [
+        "auditor",
+        "leadAuditor",
+        "headOfFunction",
+        "supervisor",
+        "qaReviewer",
+        "auditee",
+        "engagement",
+        "finding",
+        "recommendation",
+        "workpaper",
+        "correctiveAction",
+        "fieldwork",
+        "planning",
+        "reporting",
+        "followUp",
+        "planningMemo",
+        "workProgram",
+        "auditReport",
+        "independence",
+        "qaChecklist",
+        "managementResponse"
+      ],
+      "patternProperties": {
+        "^[a-zA-Z]+$": { "$ref": "#/$defs/Term" }
+      }
+    },
+    "EngagementType": {
+      "type": "object",
+      "required": [
+        "code",
+        "label",
+        "description",
+        "applicablePhases",
+        "defaultWorkflowCode",
+        "requiredTemplates",
+        "requiredChecklists",
+        "supportsMultiStandard"
+      ],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "label": { "type": "string" },
+        "description": { "type": "string" },
+        "referenceSection": { "type": "string" },
+        "applicablePhases": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "defaultWorkflowCode": { "type": "string" },
+        "requiredTemplates": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "requiredChecklists": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "teamRequirements": {
+          "type": "object",
+          "properties": {
+            "minMembers": { "type": "integer", "minimum": 1 },
+            "requiredRoles": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "supportsMultiStandard": { "type": "boolean" },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "Phase": {
+      "type": "object",
+      "required": ["code", "label", "order", "description", "exitCriteria", "isOptional"],
+      "properties": {
+        "code": { "type": "string" },
+        "label": { "type": "string" },
+        "order": { "type": "integer", "minimum": 1 },
+        "description": { "type": "string" },
+        "exitCriteria": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["code", "description", "validationType"],
+            "properties": {
+              "code": { "type": "string" },
+              "description": { "type": "string" },
+              "referenceSection": { "type": "string" },
+              "validationType": {
+                "type": "string",
+                "enum": ["manual_checkbox", "automated_rule", "document_present", "approval_complete"]
+              }
+            }
+          }
+        },
+        "requiredDocuments": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "requiredApprovals": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "isOptional": { "type": "boolean" }
+      }
+    },
+    "FindingElement": {
+      "type": "object",
+      "required": ["code", "label", "description", "helpText", "isRequired", "fieldType", "order"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "label": { "type": "string" },
+        "description": { "type": "string" },
+        "helpText": { "type": "string" },
+        "example": { "type": "string" },
+        "isRequired": { "type": "boolean" },
+        "fieldType": {
+          "type": "string",
+          "enum": [
+            "text",
+            "richtext",
+            "select",
+            "multi-select",
+            "number",
+            "currency",
+            "date",
+            "checkbox_group",
+            "file_upload"
+          ]
+        },
+        "minLength": { "type": "integer", "minimum": 0 },
+        "maxLength": { "type": "integer" },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["value", "label"],
+            "properties": {
+              "value": { "type": "string" },
+              "label": { "type": "string" },
+              "description": { "type": "string" },
+              "color": { "type": "string" }
+            }
+          }
+        },
+        "referenceSection": { "type": "string" },
+        "order": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "ClassificationScheme": {
+      "type": "object",
+      "required": ["code", "label", "description", "levels", "isRequired", "allowsReclassification"],
+      "properties": {
+        "code": { "type": "string" },
+        "label": { "type": "string" },
+        "description": { "type": "string" },
+        "levels": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "required": ["code", "label", "description", "color", "severity", "requiresEscalation"],
+            "properties": {
+              "code": { "type": "string" },
+              "label": { "type": "string" },
+              "shortLabel": { "type": "string" },
+              "description": { "type": "string" },
+              "color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+              "severity": { "type": "integer", "minimum": 1 },
+              "referenceSection": { "type": "string" },
+              "requiresEscalation": { "type": "boolean" }
+            }
+          }
+        },
+        "isRequired": { "type": "boolean" },
+        "allowsReclassification": { "type": "boolean" }
+      }
+    },
+    "Checklist": {
+      "type": "object",
+      "required": [
+        "code",
+        "label",
+        "category",
+        "description",
+        "sections",
+        "assigneeRole",
+        "completionPoint",
+        "isRequired",
+        "passingCriteria"
+      ],
+      "properties": {
+        "code": { "type": "string" },
+        "label": { "type": "string" },
+        "category": {
+          "type": "string",
+          "enum": [
+            "QUALITY_ASSURANCE",
+            "INDEPENDENCE",
+            "PEER_REVIEW",
+            "SUPERVISORY_REVIEW",
+            "QAIP",
+            "ENGAGEMENT_QUALITY_REVIEW",
+            "COMPLIANCE_AUDIT",
+            "CONTROL_TESTING",
+            "SECTOR_SPECIFIC"
+          ]
+        },
+        "description": { "type": "string" },
+        "referenceSection": { "type": "string" },
+        "sections": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["code", "title", "order", "items"],
+            "properties": {
+              "code": { "type": "string" },
+              "title": { "type": "string" },
+              "description": { "type": "string" },
+              "order": { "type": "integer", "minimum": 1 },
+              "items": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "required": ["code", "text", "isRequired", "responseType", "order"],
+                  "properties": {
+                    "code": { "type": "string" },
+                    "text": { "type": "string" },
+                    "helpText": { "type": "string" },
+                    "referenceSection": { "type": "string" },
+                    "isRequired": { "type": "boolean" },
+                    "responseType": {
+                      "type": "string",
+                      "enum": [
+                        "yes_no",
+                        "yes_no_na",
+                        "rating_1_5",
+                        "rating_satisfactory",
+                        "conformance",
+                        "text",
+                        "checkbox",
+                        "date",
+                        "file"
+                      ]
+                    },
+                    "applicableEngagementTypes": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    },
+                    "weight": { "type": "number" },
+                    "evidenceRequired": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    },
+                    "order": { "type": "integer", "minimum": 1 }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "assigneeRole": { "type": "string" },
+        "completionPoint": {
+          "type": "string",
+          "enum": ["per_engagement", "annual", "per_fieldwork_phase", "per_quarter", "once"]
+        },
+        "isRequired": { "type": "boolean" },
+        "passingCriteria": { "type": "string" }
+      }
+    },
+    "IndependenceRules": {
+      "type": "object",
+      "required": [
+        "referenceSection",
+        "declarationFrequency",
+        "coolingOffPeriodMonths",
+        "threatTypes",
+        "declarationForm",
+        "nonAuditServicesEvaluation",
+        "safeguardsFramework"
+      ],
+      "properties": {
+        "referenceSection": { "type": "string" },
+        "declarationFrequency": {
+          "type": "string",
+          "enum": ["per_engagement", "annual", "biannual"]
+        },
+        "coolingOffPeriodMonths": { "type": "integer", "minimum": 0 },
+        "partnerRotationYears": { "type": "integer" },
+        "threatTypes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["code", "label", "description", "examples"],
+            "properties": {
+              "code": { "type": "string" },
+              "label": { "type": "string" },
+              "description": { "type": "string" },
+              "examples": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          }
+        },
+        "declarationForm": {
+          "type": "object",
+          "required": ["sections"],
+          "properties": {
+            "sections": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["code", "label", "questions"],
+                "properties": {
+                  "code": { "type": "string" },
+                  "label": { "type": "string" },
+                  "questions": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["code", "text", "responseType"],
+                      "properties": {
+                        "code": { "type": "string" },
+                        "text": { "type": "string" },
+                        "responseType": {
+                          "type": "string",
+                          "enum": ["yes_no", "yes_no_na", "text"]
+                        },
+                        "followUpIfYes": { "type": "boolean" },
+                        "referenceSection": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "nonAuditServicesEvaluation": { "type": "boolean" },
+        "prohibitedNonAuditServices": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "safeguardsFramework": { "type": "boolean" }
+      }
+    },
+    "CPERules": {
+      "type": "object",
+      "required": ["hoursRequired", "cycleType", "acceptedActivityTypes", "referenceSection"],
+      "properties": {
+        "hoursRequired": { "type": "integer", "minimum": 0 },
+        "cycleType": {
+          "type": "string",
+          "enum": ["annual", "biennial", "triennial", "rolling_2_year", "rolling_3_year"]
+        },
+        "annualMinimum": { "type": "integer", "minimum": 0 },
+        "topicRequirements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["topic", "hoursRequired", "qualifyingContent"],
+            "properties": {
+              "topic": { "type": "string" },
+              "hoursRequired": { "type": "integer", "minimum": 0 },
+              "qualifyingContent": { "type": "string" }
+            }
+          }
+        },
+        "acceptedActivityTypes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "maxSelfStudyPercent": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "referenceSection": { "type": "string" }
+      }
+    },
+    "Workflow": {
+      "type": "object",
+      "required": ["code", "label", "entityType", "description", "steps", "visibleToAuditee"],
+      "properties": {
+        "code": { "type": "string" },
+        "label": { "type": "string" },
+        "entityType": {
+          "type": "string",
+          "enum": [
+            "engagement",
+            "planning_document",
+            "finding",
+            "recommendation",
+            "report",
+            "workpaper",
+            "independence_declaration",
+            "qa_checklist",
+            "corrective_action"
+          ]
+        },
+        "description": { "type": "string" },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "order",
+              "label",
+              "requiredRole",
+              "isOptional",
+              "autoAdvanceOnApproval",
+              "allowedActions"
+            ],
+            "properties": {
+              "order": { "type": "integer", "minimum": 1 },
+              "label": { "type": "string" },
+              "description": { "type": "string" },
+              "requiredRole": { "type": "string" },
+              "isOptional": { "type": "boolean" },
+              "autoAdvanceOnApproval": { "type": "boolean" },
+              "slaDays": { "type": "integer", "minimum": 0 },
+              "allowedActions": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "enum": ["approve", "reject", "request_changes", "delegate", "recall", "add_comments"]
+                }
+              },
+              "referenceSection": { "type": "string" }
+            }
+          }
+        },
+        "slaTargetDays": { "type": "integer", "minimum": 0 },
+        "visibleToAuditee": { "type": "boolean" }
+      }
+    },
+    "ReportDefinition": {
+      "type": "object",
+      "required": [
+        "code",
+        "label",
+        "description",
+        "sections",
+        "defaultFormat",
+        "requiredForEngagementTypes",
+        "referenceSection",
+        "distribution"
+      ],
+      "properties": {
+        "code": { "type": "string" },
+        "label": { "type": "string" },
+        "description": { "type": "string" },
+        "sections": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["code", "label", "order", "description", "isRequired", "contentType"],
+            "properties": {
+              "code": { "type": "string" },
+              "label": { "type": "string" },
+              "order": { "type": "integer" },
+              "description": { "type": "string" },
+              "isRequired": { "type": "boolean" },
+              "contentType": {
+                "type": "string",
+                "enum": ["template", "auto_generated", "rich_text", "table", "attestation_statement"]
+              },
+              "templateReference": { "type": "string" },
+              "autoGeneratedFrom": { "type": "string" },
+              "referenceSection": { "type": "string" },
+              "maxLength": { "type": "integer" },
+              "renderCondition": { "type": "string" }
+            }
+          }
+        },
+        "defaultFormat": {
+          "type": "string",
+          "enum": ["pdf", "docx", "html"]
+        },
+        "pageLayout": { "type": "object" },
+        "requiredForEngagementTypes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "referenceSection": { "type": "string" },
+        "distribution": {
+          "type": "object",
+          "required": ["required", "publicDistribution", "confidentialityLevel"],
+          "properties": {
+            "required": { "type": "array", "items": { "type": "string" } },
+            "recommended": { "type": "array", "items": { "type": "string" } },
+            "publicDistribution": { "type": "boolean" },
+            "confidentialityLevel": {
+              "type": "string",
+              "enum": ["public", "restricted", "confidential"]
+            }
+          }
+        }
+      }
+    },
+    "Template": {
+      "type": "object",
+      "required": ["code", "label", "category", "description", "sections", "isRequired", "tenantCustomizable"],
+      "properties": {
+        "code": { "type": "string" },
+        "label": { "type": "string" },
+        "category": {
+          "type": "string",
+          "enum": ["planning", "fieldwork", "reporting", "follow_up", "other"]
+        },
+        "description": { "type": "string" },
+        "referenceSection": { "type": "string" },
+        "sections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["code", "label", "order", "description", "isRequired", "fieldType"],
+            "properties": {
+              "code": { "type": "string" },
+              "label": { "type": "string" },
+              "order": { "type": "integer" },
+              "description": { "type": "string" },
+              "isRequired": { "type": "boolean" },
+              "helpText": { "type": "string" },
+              "defaultContent": { "type": "string" },
+              "fieldType": {
+                "type": "string",
+                "enum": ["richtext", "text", "table", "checklist", "calculation"]
+              },
+              "referenceSection": { "type": "string" }
+            }
+          }
+        },
+        "isRequired": { "type": "boolean" },
+        "tenantCustomizable": { "type": "boolean" }
+      }
+    },
+    "Crosswalk": {
+      "type": "object",
+      "required": [
+        "thisSection",
+        "thisDescription",
+        "mappedStandardRef",
+        "mappedSection",
+        "mappedDescription",
+        "mappingType",
+        "confidence"
+      ],
+      "properties": {
+        "thisSection": { "type": "string" },
+        "thisDescription": { "type": "string" },
+        "mappedStandardRef": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*:[a-zA-Z0-9.-]+$"
+        },
+        "mappedSection": { "type": "string" },
+        "mappedDescription": { "type": "string" },
+        "mappingType": {
+          "type": "string",
+          "enum": [
+            "equivalent",
+            "partial",
+            "related",
+            "this_stricter",
+            "mapped_stricter",
+            "no_equivalent"
+          ]
+        },
+        "notes": { "type": "string" },
+        "confidence": {
+          "type": "string",
+          "enum": ["authoritative", "curated", "suggested"]
+        }
+      }
+    },
+    "Dependency": {
+      "type": "object",
+      "required": ["standardRef", "type", "scope", "description"],
+      "properties": {
+        "standardRef": { "type": "string" },
+        "type": {
+          "type": "string",
+          "enum": ["incorporates", "overlays", "extends", "requires", "references"]
+        },
+        "scope": {
+          "type": "object",
+          "properties": {
+            "engagementTypes": { "type": "array", "items": { "type": "string" } },
+            "phases": { "type": "array", "items": { "type": "string" } },
+            "findingElements": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "description": { "type": "string" },
+        "referenceSection": { "type": "string" }
+      }
+    },
+    "Applicability": {
+      "type": "object",
+      "required": ["mandatoryFor"],
+      "properties": {
+        "mandatoryFor": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ApplicabilityCondition" }
+        },
+        "recommendedFor": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ApplicabilityCondition" }
+        },
+        "notApplicableFor": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ApplicabilityCondition" }
+        },
+        "thresholds": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "amount", "comparison", "triggers", "effectiveFrom"],
+            "properties": {
+              "type": { "type": "string" },
+              "currency": { "type": "string" },
+              "amount": { "type": "number" },
+              "comparison": {
+                "type": "string",
+                "enum": ["gte", "gt", "lte", "lt"]
+              },
+              "triggers": { "type": "string" },
+              "authorityReference": { "type": "string" },
+              "effectiveFrom": { "type": "string", "format": "date" },
+              "supersededOn": { "type": "string", "format": "date" }
+            }
+          }
+        }
+      }
+    },
+    "ApplicabilityCondition": {
+      "type": "object",
+      "required": ["description"],
+      "properties": {
+        "description": { "type": "string" },
+        "sectors": { "type": "array", "items": { "type": "string" } },
+        "jurisdictions": { "type": "array", "items": { "type": "string" } },
+        "entityConditions": { "type": "array", "items": { "type": "string" } },
+        "authorityReference": { "type": "string" }
+      }
+    },
+    "SectorOverlay": {
+      "type": "object",
+      "required": ["code", "label", "sector", "description"],
+      "properties": {
+        "code": { "type": "string" },
+        "label": { "type": "string" },
+        "sector": { "type": "string" },
+        "description": { "type": "string" },
+        "referenceSection": { "type": "string" },
+        "additionalChecklists": { "type": "array" },
+        "additionalFindingElements": { "type": "array" },
+        "additionalReportSections": { "type": "array" },
+        "additionalThresholds": { "type": "array" },
+        "extensions": { "type": "object" }
+      }
+    },
+    "RiskRatingScheme": {
+      "type": "object",
+      "required": ["levels", "allowUnrated", "requiresJustification"],
+      "properties": {
+        "levels": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "required": ["code", "label", "color", "description", "severity"],
+            "properties": {
+              "code": { "type": "string" },
+              "label": { "type": "string" },
+              "shortLabel": { "type": "string" },
+              "color": { "type": "string" },
+              "description": { "type": "string" },
+              "severity": { "type": "integer" }
+            }
+          }
+        },
+        "allowUnrated": { "type": "boolean" },
+        "requiresJustification": { "type": "boolean" }
+      }
+    },
+    "EvidenceRules": {
+      "type": "object",
+      "required": [
+        "referenceSection",
+        "sufficiencyCriteria",
+        "appropriatenessCriteria",
+        "reliabilityHierarchy",
+        "retentionPeriodYears",
+        "experiencedAuditorStandard",
+        "chainOfCustodyRequired"
+      ],
+      "properties": {
+        "referenceSection": { "type": "string" },
+        "sufficiencyCriteria": { "type": "string" },
+        "appropriatenessCriteria": { "type": "string" },
+        "reliabilityHierarchy": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["order", "type", "description", "reliability"],
+            "properties": {
+              "order": { "type": "integer" },
+              "type": { "type": "string" },
+              "description": { "type": "string" },
+              "reliability": {
+                "type": "string",
+                "enum": ["high", "medium_high", "medium", "lower"]
+              }
+            }
+          }
+        },
+        "retentionPeriodYears": { "type": "integer", "minimum": 1 },
+        "experiencedAuditorStandard": { "type": "boolean" },
+        "chainOfCustodyRequired": { "type": "boolean" }
+      }
+    }
+  }
+}

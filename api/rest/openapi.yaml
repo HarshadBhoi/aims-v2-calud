@@ -1,0 +1,925 @@
+openapi: 3.1.0
+info:
+  title: AIMS v2 REST API
+  version: "1.0.0"
+  description: |
+    Public REST API for the AIMS v2 multi-standard audit platform.
+
+    - Bearer token authentication via API keys (scoped per tenant)
+    - Cursor pagination on all list endpoints
+    - Optimistic concurrency via ETags (If-Match header)
+    - Idempotency via `Idempotency-Key` header on mutations
+    - Standard error taxonomy (see /api/ERRORS.md)
+
+    This spec covers representative endpoints; see `/api/trpc/routers/` for
+    the internal tRPC contracts that map to the same service layer.
+  license:
+    name: Proprietary
+  termsOfService: https://aims.example.com/terms
+  contact:
+    name: AIMS API Support
+    url: https://aims.example.com/support
+    email: api@aims.example.com
+
+servers:
+  - url: https://api.aims.example.com/v1
+    description: US production
+  - url: https://eu-api.aims.example.com/v1
+    description: EU production
+  - url: https://in-api.aims.example.com/v1
+    description: India production
+  - url: https://sandbox-api.aims.example.com/v1
+    description: Sandbox (test mode)
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Engagements
+    description: Audit engagements lifecycle
+  - name: Findings
+    description: Finding documentation and approval
+  - name: Recommendations
+    description: Recommendations and corrective actions
+  - name: Workpapers
+    description: Document management for audit evidence
+  - name: Reports
+    description: Report generation and issuance
+  - name: Approvals
+    description: Workflow approval engine
+  - name: Standard Packs
+    description: Available audit frameworks
+  - name: Webhooks
+    description: Event subscriptions
+
+paths:
+  # =========================================================================
+  # ENGAGEMENTS
+  # =========================================================================
+  /engagements:
+    get:
+      tags: [Engagements]
+      summary: List engagements
+      operationId: listEngagements
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          description: Filter by status (comma-separated)
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: search
+          in: query
+          schema:
+            type: string
+            minLength: 2
+        - name: createdAt[gte]
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: createdAt[lte]
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: sort
+          in: query
+          description: Format `field:asc|desc`
+          schema:
+            type: string
+            default: createdAt:desc
+      responses:
+        "200":
+          description: Paginated list of engagements
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EngagementListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+    post:
+      tags: [Engagements]
+      summary: Create engagement
+      operationId: createEngagement
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEngagementInput"
+      responses:
+        "201":
+          description: Engagement created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Engagement"
+          headers:
+            ETag:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/BusinessRuleViolation"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /engagements/{id}:
+    get:
+      tags: [Engagements]
+      summary: Get engagement by ID
+      operationId: getEngagement
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: Engagement found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Engagement"
+          headers:
+            ETag:
+              schema:
+                type: string
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Engagements]
+      summary: Update engagement
+      operationId: updateEngagement
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IfMatch"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateEngagementInput"
+      responses:
+        "200":
+          description: Engagement updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Engagement"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "423":
+          $ref: "#/components/responses/Locked"
+    delete:
+      tags: [Engagements]
+      summary: Soft delete engagement
+      operationId: deleteEngagement
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "204":
+          description: Engagement soft-deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+
+  /engagements/{id}/transition:
+    post:
+      tags: [Engagements]
+      summary: Transition engagement status
+      operationId: transitionEngagementStatus
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IfMatch"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [newStatus]
+              properties:
+                newStatus:
+                  $ref: "#/components/schemas/EngagementStatus"
+                comments:
+                  type: string
+                  maxLength: 2000
+      responses:
+        "200":
+          description: Status transitioned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Engagement"
+        "422":
+          $ref: "#/components/responses/BusinessRuleViolation"
+
+  /engagements/{id}/issue:
+    post:
+      tags: [Engagements]
+      summary: Issue engagement (terminal lock)
+      operationId: issueEngagement
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IfMatch"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - confirmAllChecklistsComplete
+                - confirmAllFindingsApproved
+              properties:
+                confirmAllChecklistsComplete:
+                  type: boolean
+                  enum: [true]
+                confirmAllFindingsApproved:
+                  type: boolean
+                  enum: [true]
+                issuanceNotes:
+                  type: string
+                  maxLength: 2000
+      responses:
+        "200":
+          description: Engagement issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Engagement"
+
+  # =========================================================================
+  # FINDINGS
+  # =========================================================================
+  /findings:
+    get:
+      tags: [Findings]
+      summary: List findings
+      operationId: listFindings
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: engagementId
+          in: query
+          schema:
+            type: string
+        - name: classification
+          in: query
+          schema:
+            type: string
+        - name: riskRating
+          in: query
+          schema:
+            type: string
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: isRepeat
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Paginated list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FindingListResponse"
+    post:
+      tags: [Findings]
+      summary: Create finding
+      operationId: createFinding
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateFindingInput"
+      responses:
+        "201":
+          description: Finding created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Finding"
+
+  /findings/{id}:
+    get:
+      tags: [Findings]
+      summary: Get finding by ID
+      operationId: getFinding
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: Finding
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Finding"
+
+  /findings/{id}/issue:
+    post:
+      tags: [Findings]
+      summary: Issue finding (lock with e-signature)
+      operationId: issueFinding
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IfMatch"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - confirmAllElementsComplete
+                - confirmRecommendationsLinked
+                - confirmManagementResponseReceived
+              properties:
+                confirmAllElementsComplete:
+                  type: boolean
+                  enum: [true]
+                confirmRecommendationsLinked:
+                  type: boolean
+                  enum: [true]
+                confirmManagementResponseReceived:
+                  type: boolean
+                  enum: [true]
+                signatureNote:
+                  type: string
+      responses:
+        "200":
+          description: Finding issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Finding"
+
+  # =========================================================================
+  # STANDARD PACKS
+  # =========================================================================
+  /standard-packs:
+    get:
+      tags: [Standard Packs]
+      summary: List available Standard Packs
+      operationId: listStandardPacks
+      responses:
+        "200":
+          description: List of packs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/StandardPack"
+
+  /standard-packs/{code}/{version}:
+    get:
+      tags: [Standard Packs]
+      summary: Get Standard Pack content
+      operationId: getStandardPack
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Pack content (full StandardPack JSON)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StandardPack"
+
+  # =========================================================================
+  # WEBHOOKS
+  # =========================================================================
+  /webhooks:
+    get:
+      tags: [Webhooks]
+      summary: List webhook endpoints
+      operationId: listWebhooks
+      responses:
+        "200":
+          description: List of webhooks
+    post:
+      tags: [Webhooks]
+      summary: Create webhook endpoint
+      operationId: createWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, events]
+              properties:
+                url:
+                  type: string
+                  format: uri
+                events:
+                  type: array
+                  items:
+                    type: string
+                    example: finding.issued
+                secret:
+                  type: string
+                  description: Used for signing outbound webhook requests
+      responses:
+        "201":
+          description: Webhook created
+
+# =========================================================================
+# COMPONENTS
+# =========================================================================
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: "API Key (aims_sk_live_... or aims_sk_test_...)"
+
+  parameters:
+    IdPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[a-z0-9]{24}$"
+      example: cjld2cjxh0000qzrmn831i7rn
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      schema:
+        type: string
+        pattern: "^[0-9A-HJKMNP-TV-Z]{26}$"
+      description: ULID for idempotent mutations
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema:
+        type: string
+      description: ETag from previous GET (enables optimistic concurrency)
+
+  responses:
+    BadRequest:
+      description: Invalid input
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: Authenticated but lacks permission
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: State conflict (e.g., version mismatch)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    PreconditionFailed:
+      description: ETag mismatch (optimistic concurrency)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Locked:
+      description: Resource is locked (e.g., finding issued)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    BusinessRuleViolation:
+      description: Valid input but violates business rule
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RateLimited:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+
+  schemas:
+    Cuid:
+      type: string
+      pattern: "^[a-z0-9]{24}$"
+      example: cjld2cjxh0000qzrmn831i7rn
+
+    EngagementStatus:
+      type: string
+      enum:
+        - DRAFT
+        - PLANNING
+        - FIELDWORK
+        - REPORTING
+        - QUALITY_REVIEW
+        - ISSUED
+        - CLOSED
+        - CANCELLED
+        - FROZEN
+
+    EngagementType:
+      type: string
+      enum:
+        - FINANCIAL_AUDIT
+        - PERFORMANCE_AUDIT
+        - ATTESTATION_EXAMINATION
+        - ATTESTATION_REVIEW
+        - AGREED_UPON_PROCEDURES
+        - SINGLE_AUDIT
+        - COMPLIANCE_AUDIT
+        - INTERNAL_AUDIT_ASSURANCE
+        - INTERNAL_AUDIT_CONSULTING
+        - IT_AUDIT
+        - CERTIFICATION_STAGE_1
+        - CERTIFICATION_STAGE_2
+        - SURVEILLANCE
+        - RECERTIFICATION
+        - FOLLOW_UP
+        - INVESTIGATION
+
+    FindingStatus:
+      type: string
+      enum:
+        - DRAFT
+        - UNDER_REVIEW
+        - APPROVED
+        - COMMUNICATED
+        - ISSUED
+        - CLOSED
+        - REOPENED
+        - WITHDRAWN
+
+    RiskRating:
+      type: string
+      enum: [CRITICAL, HIGH, MEDIUM, LOW, INFORMATIONAL]
+
+    PackRef:
+      type: object
+      required: [code, version]
+      properties:
+        code:
+          type: string
+          pattern: "^[A-Z][A-Z0-9_]*$"
+          example: GAGAS
+        version:
+          type: string
+          example: "2024"
+
+    Engagement:
+      type: object
+      properties:
+        id:
+          $ref: "#/components/schemas/Cuid"
+        engagementNumber:
+          type: string
+        title:
+          type: string
+        engagementType:
+          $ref: "#/components/schemas/EngagementType"
+        status:
+          $ref: "#/components/schemas/EngagementStatus"
+        primaryPack:
+          $ref: "#/components/schemas/PackRef"
+        objectives:
+          type: string
+        scope:
+          type: string
+        periodStartDate:
+          type: string
+          format: date
+        periodEndDate:
+          type: string
+          format: date
+        plannedStartDate:
+          type: string
+          format: date
+        plannedEndDate:
+          type: string
+          format: date
+        actualStartDate:
+          type: string
+          format: date
+        actualEndDate:
+          type: string
+          format: date
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+
+    CreateEngagementInput:
+      type: object
+      required: [title, engagementType, primaryPack, initialTeam]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 500
+        engagementNumber:
+          type: string
+        engagementType:
+          $ref: "#/components/schemas/EngagementType"
+        primaryPack:
+          $ref: "#/components/schemas/PackRef"
+        additionalPacks:
+          type: array
+          items:
+            $ref: "#/components/schemas/PackRef"
+        objectives:
+          type: string
+        scope:
+          type: string
+        methodology:
+          type: string
+        periodStartDate:
+          type: string
+          format: date
+        periodEndDate:
+          type: string
+          format: date
+        initialTeam:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [userId, role]
+            properties:
+              userId:
+                $ref: "#/components/schemas/Cuid"
+              role:
+                type: string
+              hoursAllocated:
+                type: number
+
+    UpdateEngagementInput:
+      type: object
+      description: Partial update; all fields optional
+      properties:
+        title:
+          type: string
+        objectives:
+          type: string
+        scope:
+          type: string
+
+    EngagementListResponse:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Engagement"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+
+    Finding:
+      type: object
+      properties:
+        id:
+          $ref: "#/components/schemas/Cuid"
+        findingNumber:
+          type: string
+        engagementId:
+          $ref: "#/components/schemas/Cuid"
+        title:
+          type: string
+        status:
+          $ref: "#/components/schemas/FindingStatus"
+        # Polymorphic element values (validated by pack)
+        elementValues:
+          type: object
+          description: |
+            Key-value map where keys are element codes defined by the active
+            Standard Pack (e.g., CRITERIA, CONDITION, CAUSE, EFFECT for GAGAS).
+          additionalProperties: true
+        classification:
+          type: string
+        classificationScheme:
+          type: string
+        riskRating:
+          $ref: "#/components/schemas/RiskRating"
+        questionedCostsKnown:
+          type: string
+          description: Decimal string (Single Audit)
+        questionedCostsLikely:
+          type: string
+          description: Decimal string (Single Audit)
+        federalProgramAln:
+          type: string
+        isRepeatFinding:
+          type: boolean
+        priorFindingId:
+          $ref: "#/components/schemas/Cuid"
+        lockedAt:
+          type: string
+          format: date-time
+          description: Set when finding is ISSUED; immutable thereafter
+        signedHash:
+          type: string
+          description: SHA-256 e-signature of finding content at issuance
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+
+    CreateFindingInput:
+      type: object
+      required: [engagementId, title, elementValues]
+      properties:
+        engagementId:
+          $ref: "#/components/schemas/Cuid"
+        title:
+          type: string
+          minLength: 1
+          maxLength: 500
+        elementValues:
+          type: object
+          additionalProperties: true
+        classification:
+          type: string
+        classificationScheme:
+          type: string
+        riskRating:
+          $ref: "#/components/schemas/RiskRating"
+        questionedCostsKnown:
+          type: string
+        questionedCostsLikely:
+          type: string
+        federalProgramAln:
+          type: string
+          pattern: "^\\d{2,3}\\.\\d{3}$"
+        isRepeatFinding:
+          type: boolean
+          default: false
+        priorFindingId:
+          $ref: "#/components/schemas/Cuid"
+
+    FindingListResponse:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Finding"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+
+    StandardPack:
+      type: object
+      description: |
+        Full StandardPack definition (see data-model/standard-pack-schema.ts).
+        This is a simplified representation for the OpenAPI spec;
+        clients should expect the full StandardPack shape from that schema.
+      properties:
+        code:
+          type: string
+        version:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum:
+            - PROPOSED
+            - FINAL_PENDING
+            - EFFECTIVE
+            - TRANSITIONING
+            - SUPERSEDED
+            - WITHDRAWN
+            - IN_LITIGATION
+        effectiveFrom:
+          type: string
+          format: date
+        effectiveTo:
+          type: string
+          format: date
+        packContent:
+          type: object
+          description: Full StandardPack JSON (see data-model schema)
+          additionalProperties: true
+
+    Pagination:
+      type: object
+      required: [hasMore]
+      properties:
+        nextCursor:
+          type: string
+          nullable: true
+        hasMore:
+          type: boolean
+        totalCount:
+          type: integer
+          description: Only present on some endpoints; optional
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code:
+              type: string
+              example: CONFLICT
+              description: Typed error code (see /api/ERRORS.md)
+            message:
+              type: string
+              example: Record has been modified
+            details:
+              type: object
+              additionalProperties: true
+            request_id:
+              type: string
+              description: ULID for support / tracing

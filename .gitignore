@@ -1,0 +1,47 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Dependencies (when added)
+node_modules/
+.pnpm-store/
+
+# Build outputs (when added)
+dist/
+build/
+.next/
+.turbo/
+coverage/
+*.tsbuildinfo
+
+# Env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Secrets
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Logs
+*.log
+logs/
+
+# Test artifacts
+playwright-report/
+test-results/
+
+# Claude Code project-local settings
+.claude/
+
+# Prisma
+prisma/migrations/*/migration.sql.old

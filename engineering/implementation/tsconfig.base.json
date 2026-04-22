@@ -1,0 +1,76 @@
+// REFERENCE IMPLEMENTATION — packages/tsconfig/base.json
+//
+// Exported as "@aims/tsconfig/base". Individual apps extend this + layer on
+// framework-specific bits (e.g., jsx for Next, CommonJS for NestJS tooling).
+//
+// Pinned to TypeScript 5.5+. Requires typescript-eslint 8+.
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "AIMS v2 — Base",
+
+  "compilerOptions": {
+    // ─── Target + module ──────────────────────────────────────────────────
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023"],
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,            // required for SWC / esbuild
+    "verbatimModuleSyntax": true,       // `import type` must be explicit
+
+    // ─── Strictness ───────────────────────────────────────────────────────
+    "strict": true,
+    "noUncheckedIndexedAccess": true,      // arr[i] is T | undefined
+    "exactOptionalPropertyTypes": true,    // {foo?: string} ≠ {foo: undefined}
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "useUnknownInCatchVariables": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "noUnusedLocals": true,                 // ESLint handles at finer granularity; double-coverage ok
+    "noUnusedParameters": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // ─── Emit ─────────────────────────────────────────────────────────────
+    "declaration": true,                    // generate .d.ts
+    "declarationMap": true,
+    "sourceMap": true,
+    "inlineSources": false,
+    "preserveConstEnums": true,
+    "removeComments": false,
+    "importHelpers": true,                  // tslib for helper functions (smaller output)
+
+    // ─── Speed ────────────────────────────────────────────────────────────
+    "incremental": true,
+    "skipLibCheck": true,
+    "composite": true,                      // enables project references
+    "tsBuildInfoFile": "./.tsbuildinfo",
+
+    // ─── Interop quirks ───────────────────────────────────────────────────
+    "allowJs": false,
+    "checkJs": false,
+
+    // ─── Paths ────────────────────────────────────────────────────────────
+    "baseUrl": ".",
+    "paths": {
+      "@/*":                 ["./src/*"],
+      "@validation/*":       ["../../packages/validation/src/*"],
+      "@standard-packs/*":   ["../../packages/standard-packs/src/*"],
+      "@ui/*":               ["../../packages/ui/src/*"]
+    }
+  },
+
+  "exclude": [
+    "node_modules",
+    "dist",
+    ".next",
+    ".turbo",
+    "coverage",
+    "**/*.test.ts",
+    "**/*.test.tsx"
+  ]
+}

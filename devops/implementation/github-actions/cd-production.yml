@@ -1,0 +1,271 @@
+# .github/workflows/cd-production.yml
+#
+# REFERENCE IMPLEMENTATION — Production deploy for AIMS v2.
+#
+# Manual trigger (workflow_dispatch). Gated by:
+#   - 2× human approval (GitHub Environment)
+#   - Change window (Tue/Thu 10–14 UTC unless hotfix)
+#   - Min 24h soak in staging
+#   - Error budget not exhausted
+# Uses Argo Rollouts for canary progressive delivery.
+
+name: cd-production
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag (e.g. v1.2.3) — must already be deployed to staging"
+        required: true
+        type: string
+      rollout-type:
+        description: "Rollout type"
+        required: true
+        type: choice
+        default: standard
+        options: [standard, hotfix]
+      change-ticket:
+        description: "Change ticket URL (Linear / ServiceNow)"
+        required: true
+        type: string
+      regions:
+        description: "Regions to deploy to (comma-separated)"
+        required: true
+        type: choice
+        default: "us-east-1,eu-west-1"
+        options:
+          - "us-east-1"
+          - "us-east-1,eu-west-1"
+          - "us-east-1,eu-west-1,ap-southeast-1"
+
+permissions:
+  id-token: write
+  contents: read
+  deployments: write
+
+env:
+  APP_VERSION: ${{ inputs.version }}
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Pre-flight checks — must pass before gate
+  # ─────────────────────────────────────────────────────────────────────────
+  preflight:
+    name: Pre-flight checks
+    runs-on: ubuntu-24.04
+    outputs:
+      regions: ${{ steps.split.outputs.regions }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: ${{ inputs.version }} }
+
+      - name: Verify tag exists and matches a build
+        run: |
+          if ! git rev-parse "${{ inputs.version }}" >/dev/null 2>&1; then
+            echo "Tag ${{ inputs.version }} not found"
+            exit 1
+          fi
+
+      - name: Change window check
+        if: inputs.rollout-type == 'standard'
+        run: |
+          DOW=$(date -u +%u)    # 1=Mon .. 7=Sun
+          HOUR=$(date -u +%H)
+          if [[ "$DOW" -ne 2 && "$DOW" -ne 4 ]]; then
+            echo "Production deploys only on Tue/Thu (hotfix exempt). Today is DOW=$DOW."
+            exit 1
+          fi
+          if [[ "$HOUR" -lt 10 || "$HOUR" -ge 14 ]]; then
+            echo "Production deploys only 10:00–14:00 UTC. Current hour UTC=$HOUR."
+            exit 1
+          fi
+
+      - name: Verify 24h soak in staging
+        if: inputs.rollout-type == 'standard'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_STAGING_ACCOUNT_ID }}:role/github-deploy-read
+          aws-region: us-east-1
+      - name: Query staging deploy time
+        if: inputs.rollout-type == 'standard'
+        run: |
+          # Fetch staging deploy metadata (example via S3-stored manifest)
+          META=$(aws s3 cp s3://aims-staging-deploys/latest.json -)
+          DEPLOYED_AT=$(echo "$META" | jq -r ".version.\"${{ inputs.version }}\".deployed_at // empty")
+          if [[ -z "$DEPLOYED_AT" ]]; then
+            echo "Version ${{ inputs.version }} has not been deployed to staging."
+            exit 1
+          fi
+          AGE_HOURS=$(( ( $(date -u +%s) - $(date -u -d "$DEPLOYED_AT" +%s) ) / 3600 ))
+          if [[ "$AGE_HOURS" -lt 24 ]]; then
+            echo "Version in staging only ${AGE_HOURS}h (needs 24h). Exiting."
+            exit 1
+          fi
+          echo "Soak OK: ${AGE_HOURS}h in staging."
+
+      - name: Check error budget (SLO burn)
+        run: |
+          # Query Prometheus / AMP for current error budget burn rate.
+          BURN=$(curl -s "https://grafana.internal/api/slo/current-burn?service=api-prod" | jq -r .burnRate)
+          if (( $(echo "$BURN > 10" | bc -l) )); then
+            echo "Error budget burning at ${BURN}× — too risky to deploy. Override requires VP Eng manual workflow."
+            exit 1
+          fi
+
+      - id: split
+        run: |
+          echo "regions=$(echo '${{ inputs.regions }}' | jq -Rc 'split(\",\")')" >> $GITHUB_OUTPUT
+
+      - name: Summarize
+        run: |
+          echo "### Pre-flight summary" >> $GITHUB_STEP_SUMMARY
+          echo "- Version: \`${{ inputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Type: \`${{ inputs.rollout-type }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Regions: \`${{ inputs.regions }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Change ticket: ${{ inputs.change-ticket }}" >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Approval gate
+  # ─────────────────────────────────────────────────────────────────────────
+  approval:
+    name: Production approval
+    needs: preflight
+    runs-on: ubuntu-24.04
+    environment:
+      name: production
+      # GitHub Environment configured with 2 required reviewers (different people from author)
+    steps:
+      - name: Record approval
+        run: echo "Approved by reviewers for ${{ inputs.version }} at $(date -u)"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Migrate DB (one-shot job run before app rollout)
+  # Runs per region.
+  # ─────────────────────────────────────────────────────────────────────────
+  migrate:
+    name: Migrate DB — ${{ matrix.region }}
+    needs: [preflight, approval]
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        region: ${{ fromJSON(needs.preflight.outputs.regions) }}
+      fail-fast: true
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: ${{ inputs.version }} }
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_PROD_ACCOUNT_ID }}:role/github-deploy-production
+          aws-region: ${{ matrix.region }}
+      - name: Run migration job
+        run: |
+          aws eks update-kubeconfig --name eks-prod-${{ matrix.region }}
+          kubectl create job \
+            --namespace aims-jobs \
+            --from=cronjob/migrator \
+            migrate-${{ inputs.version }}-$(date +%s) \
+            --image=${{ vars.ECR_REGISTRY }}/aims/migrator:${{ inputs.version }}
+          # Tail logs until job completes; fail this step if migrator fails.
+          kubectl wait --for=condition=complete --timeout=15m \
+            job -l version=${{ inputs.version }} -n aims-jobs
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Canary rollout via Argo Rollouts (per region, parallel)
+  # ─────────────────────────────────────────────────────────────────────────
+  rollout:
+    name: Rollout — ${{ matrix.region }}
+    needs: [preflight, migrate]
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        region: ${{ fromJSON(needs.preflight.outputs.regions) }}
+      fail-fast: false      # one region can fail without blocking others
+    concurrency:
+      group: prod-rollout-${{ matrix.region }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: ${{ inputs.version }} }
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_PROD_ACCOUNT_ID }}:role/github-deploy-production
+          aws-region: ${{ matrix.region }}
+      - run: aws eks update-kubeconfig --name eks-prod-${{ matrix.region }}
+
+      - name: Statuspage — investigating
+        run: |
+          curl -X PATCH "https://api.statuspage.io/v1/pages/${{ secrets.STATUSPAGE_PAGE_ID }}/incidents" \
+            -H "Authorization: OAuth ${{ secrets.STATUSPAGE_TOKEN }}" \
+            -d "incident[name]=Scheduled deploy ${{ inputs.version }} in ${{ matrix.region }}" \
+            -d "incident[status]=in_progress" \
+            -d "incident[impact_override]=maintenance"
+
+      - name: Update ArgoCD app to target version
+        run: |
+          argocd app set aims-v2-prod-${{ matrix.region }} \
+            --helm-set image.tag=${{ inputs.version }} \
+            --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+            --server argocd.aims.internal --grpc-web
+          argocd app sync aims-v2-prod-${{ matrix.region }} \
+            --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+            --server argocd.aims.internal --grpc-web
+
+      - name: Watch rollout (canary steps with SLO analysis)
+        run: |
+          # Argo Rollouts will progress through canary steps defined in manifest.
+          # This command blocks until rollout is Healthy or Degraded.
+          kubectl argo rollouts status -n aims api --timeout=45m
+          kubectl argo rollouts status -n aims web --timeout=45m
+
+      - name: Smoke tests
+        run: |
+          export BASE_URL="https://${{ matrix.region }}.aims.io"
+          pnpm --filter=e2e test:smoke-prod
+
+      - name: Statuspage — resolved
+        if: success()
+        run: |
+          curl -X PATCH "https://api.statuspage.io/v1/pages/${{ secrets.STATUSPAGE_PAGE_ID }}/incidents/${{ env.STATUSPAGE_INCIDENT_ID }}" \
+            -d "incident[status]=resolved"
+
+      - name: Slack notify
+        if: always()
+        uses: slackapi/slack-github-action@v1
+        with:
+          channel-id: C0XXXXXX
+          slack-message: |
+            Production deploy ${{ inputs.version }} → ${{ matrix.region }}: ${{ job.status }}
+            Initiator: ${{ github.actor }}
+            Change: ${{ inputs.change-ticket }}
+        env: { SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }} }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Post-deploy — record in Sentry, update change ticket, tag release
+  # ─────────────────────────────────────────────────────────────────────────
+  post-deploy:
+    name: Post-deploy
+    needs: rollout
+    runs-on: ubuntu-24.04
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create Sentry release
+        uses: getsentry/action-release@v1
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: aims
+          SENTRY_PROJECT: api
+        with:
+          environment: production
+          version: ${{ inputs.version }}
+
+      - name: Tag release in Grafana annotations
+        run: |
+          curl -X POST https://grafana.internal/api/annotations \
+            -H "Authorization: Bearer ${{ secrets.GRAFANA_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"text\":\"Deploy ${{ inputs.version }}\",\"tags\":[\"deploy\",\"prod\"]}"
+
+      - name: Update change ticket
+        run: |
+          # POST to Linear / ServiceNow API to mark change record complete
+          echo "change ticket update would go here"

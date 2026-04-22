@@ -1,0 +1,1753 @@
+// AIMS v2 — Prisma Schema
+// PostgreSQL 16+ | Multi-tenant | Multi-standard audit platform
+// ================================================================
+
+generator client {
+  provider      = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions", "fullTextSearchPostgres", "views", "multiSchema"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  // pgcrypto intentionally excluded — field-level encryption happens at the
+  // application layer via packages/encryption/ with KMS-wrapped per-tenant DEKs.
+  // See ADR-0001 (../references/adr/0001-ale-replaces-pgcrypto.md).
+  extensions = [uuid_ossp(map: "uuid-ossp"), pg_trgm, btree_gin, pg_cron]
+  schemas    = ["public", "audit", "platform"]
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum EngagementType {
+  FINANCIAL_AUDIT
+  PERFORMANCE_AUDIT
+  ATTESTATION_EXAMINATION
+  ATTESTATION_REVIEW
+  AGREED_UPON_PROCEDURES
+  SINGLE_AUDIT
+  COMPLIANCE_AUDIT
+  INTERNAL_AUDIT_ASSURANCE
+  INTERNAL_AUDIT_CONSULTING
+  IT_AUDIT
+  CERTIFICATION_STAGE_1
+  CERTIFICATION_STAGE_2
+  SURVEILLANCE
+  RECERTIFICATION
+  FOLLOW_UP
+  INVESTIGATION
+
+  @@schema("public")
+}
+
+enum EngagementStatus {
+  DRAFT
+  PLANNING
+  FIELDWORK
+  REPORTING
+  QUALITY_REVIEW
+  ISSUED
+  CLOSED
+  CANCELLED
+  FROZEN        // Legal hold or investigation pause
+
+  @@schema("public")
+}
+
+enum FindingStatus {
+  DRAFT
+  UNDER_REVIEW
+  APPROVED
+  COMMUNICATED
+  ISSUED          // Immutable after this
+  CLOSED
+  REOPENED
+  WITHDRAWN       // Finding retracted (requires justification)
+
+  @@schema("public")
+}
+
+enum RecommendationStatus {
+  OPEN
+  IN_PROGRESS
+  IMPLEMENTED
+  VERIFIED
+  CLOSED
+  RISK_ACCEPTED   // Management accepted risk (IIA Standard 15.x)
+  SUPERSEDED
+
+  @@schema("public")
+}
+
+enum CAPStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+  UNDER_VERIFICATION
+  VERIFIED
+  OVERDUE
+  CANCELLED
+  REOPENED
+
+  @@schema("public")
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  DELEGATED
+  RECALLED
+  WITHDRAWN
+  ESCALATED
+
+  @@schema("public")
+}
+
+enum WorkpaperStatus {
+  DRAFT
+  UNDER_REVIEW
+  REVIEWED
+  APPROVED
+  LOCKED          // Part of issued engagement, immutable
+  ARCHIVED
+
+  @@schema("public")
+}
+
+enum PackStatus {
+  PROPOSED
+  FINAL_PENDING
+  EFFECTIVE
+  TRANSITIONING
+  SUPERSEDED
+  WITHDRAWN
+  IN_LITIGATION
+
+  @@schema("platform")
+}
+
+enum DataRegion {
+  US_EAST
+  US_WEST
+  EU_CENTRAL
+  EU_WEST
+  UK
+  ASIA_PACIFIC
+  INDIA
+  CANADA
+  AUSTRALIA
+  ON_PREMISES
+
+  @@schema("platform")
+}
+
+enum SubscriptionTier {
+  FREE
+  PROFESSIONAL
+  ENTERPRISE
+  ON_PREMISES_LICENSE
+  CUSTOM
+
+  @@schema("platform")
+}
+
+enum AuditLogAction {
+  CREATE
+  UPDATE
+  DELETE
+  SOFT_DELETE
+  RESTORE
+  APPROVE
+  REJECT
+  SUBMIT
+  RECALL
+  DELEGATE
+  ISSUE
+  LOCK
+  UNLOCK
+  LOGIN
+  LOGOUT
+  LOGIN_FAILED
+  MFA_CHALLENGE
+  MFA_SUCCESS
+  MFA_FAILED
+  PASSWORD_CHANGED
+  ROLE_CHANGED
+  PERMISSION_CHANGED
+  DATA_EXPORTED
+  FILE_UPLOADED
+  FILE_DOWNLOADED
+  FILE_DELETED
+  ENCRYPTION_KEY_ROTATED
+  TENANT_CREATED
+  TENANT_DEACTIVATED
+
+  @@schema("audit")
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  SMS
+  WEBHOOK
+
+  @@schema("public")
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+  DEACTIVATED
+  DELETED
+
+  @@schema("public")
+}
+
+// ============================================================================
+// PLATFORM SCHEMA — Cross-tenant objects
+// ============================================================================
+
+/// Standard Packs are the versioned configuration modules (e.g., GAGAS:2024).
+/// Immutable once published (status = EFFECTIVE or TRANSITIONING).
+model StandardPack {
+  // Composite primary key: code + version
+  code           String
+  version        String
+
+  // Metadata (denormalized from packContent for query efficiency)
+  name           String
+  commonName     String?
+  issuingBody    String
+  status         PackStatus
+  publishedYear  Int
+  effectiveFrom  DateTime     @db.Date
+  effectiveTo    DateTime?    @db.Date
+  transitionDeadline DateTime? @db.Date
+  earlyAdoptionAllowed Boolean @default(false)
+  previousVersion String?
+  schemaVersion  String       @default("1.0.0")
+
+  // Full pack content as JSONB (the StandardPack from data-model)
+  packContent    Json
+
+  // Provenance
+  publishedBy    String?      // User ID of platform admin who published
+  publishedAt    DateTime?    @db.Timestamptz(6)
+  reviewedBy     String?      // Domain expert who verified content
+  reviewedAt     DateTime?    @db.Timestamptz(6)
+  contentHash    String       // SHA-256 of packContent for tamper detection
+
+  // Timestamps
+  createdAt      DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(6)
+  version_       Int          @default(1) @map("_version") // Optimistic concurrency
+
+  // Indexes
+  @@id([code, version])
+  @@index([status, effectiveFrom])
+  @@index([code])
+  @@map("standard_packs")
+  @@schema("platform")
+}
+
+/// Tenants that have activated a specific Standard Pack.
+model TenantStandardPack {
+  id             String       @id @default(cuid())
+  tenantId       String
+  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  packCode       String
+  packVersion    String
+
+  isDefault      Boolean      @default(false)
+  customConfig   Json         @default("{}")  // Tenant overrides
+  activatedAt    DateTime     @default(now()) @db.Timestamptz(6)
+  deactivatedAt  DateTime?    @db.Timestamptz(6)
+
+  createdAt      DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(6)
+  version_       Int          @default(1) @map("_version")
+
+  @@unique([tenantId, packCode, packVersion])
+  @@index([tenantId])
+  @@map("tenant_standard_packs")
+  @@schema("platform")
+}
+
+/// Cross-pack crosswalks (mappings between standards).
+/// Stored in platform schema because crosswalks are global knowledge.
+model PackCrosswalk {
+  id                  String   @id @default(cuid())
+
+  sourcePackCode      String
+  sourcePackVersion   String
+  sourceSection       String
+
+  targetPackCode      String
+  targetPackVersion   String
+  targetSection       String
+
+  mappingType         String   // 'equivalent' | 'partial' | 'related' | 'this_stricter' | 'mapped_stricter' | 'no_equivalent'
+  confidence          String   // 'authoritative' | 'curated' | 'suggested'
+
+  sourceDescription   String
+  targetDescription   String
+  notes               String?
+
+  createdBy           String?
+  reviewedBy          String?
+  createdAt           DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([sourcePackCode, sourcePackVersion, sourceSection, targetPackCode, targetPackVersion, targetSection])
+  @@index([sourcePackCode, sourcePackVersion])
+  @@index([targetPackCode, targetPackVersion])
+  @@map("pack_crosswalks")
+  @@schema("platform")
+}
+
+// ============================================================================
+// PUBLIC SCHEMA — Tenant-scoped business objects
+// ============================================================================
+
+/// A customer organization.
+model Tenant {
+  id                    String    @id @default(cuid())
+  slug                  String    @unique  // URL-safe identifier
+  name                  String
+  legalName             String?
+
+  // Branding
+  logoUrl               String?
+  primaryColor          String?
+  organizationType      String?   // 'government' | 'public_company' | 'nonprofit' | ...
+
+  // Region & compliance
+  dataRegion            DataRegion
+  timezone              String    @default("America/New_York")
+  locale                String    @default("en-US")
+
+  // Configuration (typed via JSONB)
+  settings              Json      @default("{}")
+  features              Json      @default("{}")   // Feature flags
+
+  // Fiscal configuration
+  fiscalYearStartMonth  Int       @default(1) @db.SmallInt  // 1-12
+
+  // Subscription
+  subscriptionTier      SubscriptionTier @default(FREE)
+  subscriptionStartsAt  DateTime? @db.Timestamptz(6)
+  subscriptionEndsAt    DateTime? @db.Timestamptz(6)
+
+  // Lifecycle
+  status                String    @default("active")
+  suspendedAt           DateTime? @db.Timestamptz(6)
+  suspendedReason       String?
+
+  // Data retention (configurable for compliance)
+  retentionYears        Int       @default(7)
+
+  // Relations
+  users                 User[]
+  userTenants           UserTenant[]
+  engagements           Engagement[]
+  standards             TenantStandardPack[]
+  auditUniverseEntities AuditUniverseEntity[]
+  annualAuditPlans      AnnualAuditPlan[]
+
+  // Timestamps
+  createdAt             DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime  @updatedAt @db.Timestamptz(6)
+  deletedAt             DateTime? @db.Timestamptz(6)
+  version_              Int       @default(1) @map("_version")
+
+  @@index([status])
+  @@index([dataRegion])
+  @@map("tenants")
+  @@schema("public")
+}
+
+/// A user account. Users can belong to multiple tenants (future multi-tenant user support).
+model User {
+  id                   String       @id @default(cuid())
+
+  // Identity
+  email                String       @unique
+  emailVerifiedAt      DateTime?    @db.Timestamptz(6)
+  passwordHash         String?      // Null for SSO-only users
+  mfaSecret            String?      // Ciphertext: Application-Layer Encryption via packages/encryption/ (ADR-0001)
+  mfaRequiredAt        DateTime?    @db.Timestamptz(6)
+  mfaVerifiedAt        DateTime?    @db.Timestamptz(6)
+
+  // Profile
+  name                 String
+  displayName          String?
+  avatarUrl            String?
+  title                String?
+  department           String?
+  phone                String?
+
+  // Primary tenant (user's default)
+  primaryTenantId      String
+  primaryTenant        Tenant       @relation(fields: [primaryTenantId], references: [id])
+
+  // All tenants
+  tenants              UserTenant[]
+
+  // Status
+  status               UserStatus   @default(INVITED)
+  lastLoginAt          DateTime?    @db.Timestamptz(6)
+  failedLoginCount     Int          @default(0)
+  lockedUntil          DateTime?    @db.Timestamptz(6)
+
+  // Preferences
+  locale               String?
+  timezone             String?
+  preferences          Json         @default("{}")
+
+  // Relations — many are tenant-scoped and use UserTenant junction
+  certifications       Certification[]
+  cpeRecords           CPERecord[]
+  notifications        Notification[]
+
+  // Timestamps
+  createdAt            DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime     @updatedAt @db.Timestamptz(6)
+  deletedAt            DateTime?    @db.Timestamptz(6)
+  version_             Int          @default(1) @map("_version")
+
+  @@index([email])
+  @@index([primaryTenantId])
+  @@index([status])
+  @@map("users")
+  @@schema("public")
+}
+
+/// User-Tenant relationship. Supports users belonging to multiple tenants.
+model UserTenant {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId         String
+  tenant           Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  role             String   // Role code (e.g., "ADMIN", "DIRECTOR", "SENIOR_AUDITOR")
+  permissions      Json     @default("[]")  // Tenant-specific permission overrides
+  isActive         Boolean  @default(true)
+
+  invitedAt        DateTime @default(now()) @db.Timestamptz(6)
+  invitedBy        String?
+  joinedAt         DateTime? @db.Timestamptz(6)
+  suspendedAt      DateTime? @db.Timestamptz(6)
+
+  createdAt        DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @db.Timestamptz(6)
+  deletedAt        DateTime? @db.Timestamptz(6)
+  version_         Int      @default(1) @map("_version")
+
+  @@unique([userId, tenantId])
+  @@index([tenantId, role])
+  @@map("user_tenants")
+  @@schema("public")
+}
+
+// ============================================================================
+// ENGAGEMENTS — Core audit entity
+// ============================================================================
+
+/// An audit engagement. Multi-standard support via EngagementStandardPack.
+model Engagement {
+  id                String             @id @default(cuid())
+  tenantId          String
+  tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Identity
+  engagementNumber  String             // Tenant-unique, human-readable (e.g., "ENG-2026-001")
+  title             String
+
+  // Type & standards
+  engagementType    EngagementType
+  primaryPackCode   String
+  primaryPackVersion String
+  standardPacks     EngagementStandardPack[]
+
+  // Status
+  status            EngagementStatus   @default(DRAFT)
+  currentPhaseCode  String?            // Reference to pack phase definition
+
+  // Scope
+  objectives        String?            @db.Text
+  scope             String?            @db.Text
+  methodology       String?            @db.Text
+
+  // Auditee context
+  auditeeName       String?
+  auditeeContact    Json?              // Structured contact info
+
+  // Bitemporal — valid time (what period the engagement covers)
+  periodStartDate   DateTime?          @db.Date
+  periodEndDate     DateTime?          @db.Date
+
+  // Execution dates
+  plannedStartDate  DateTime?          @db.Date
+  plannedEndDate    DateTime?          @db.Date
+  actualStartDate   DateTime?          @db.Date
+  actualEndDate     DateTime?          @db.Date
+  reportIssuedDate  DateTime?          @db.Date
+
+  // Risk
+  inherentRiskRating String?
+  residualRiskRating String?
+  riskFactors       Json?
+
+  // Budget
+  budgetedHours     Decimal?           @db.Decimal(10, 2)
+  actualHours       Decimal?           @db.Decimal(10, 2)
+
+  // Annual audit plan reference
+  annualPlanId      String?
+  annualPlan        AnnualAuditPlan?   @relation(fields: [annualPlanId], references: [id])
+
+  // Audit universe entity
+  universeEntityId  String?
+  universeEntity    AuditUniverseEntity? @relation(fields: [universeEntityId], references: [id])
+
+  // Custom fields per standard/tenant
+  customFields      Json               @default("{}")
+
+  // Immutability after issuance
+  lockedAt          DateTime?          @db.Timestamptz(6)
+  lockedBy          String?
+
+  // Relations
+  teamMembers       EngagementTeamMember[]
+  phases            EngagementPhase[]
+  planningDocuments PlanningDocument[]
+  workPrograms      WorkProgram[]
+  observations      Observation[]
+  findings          Finding[]
+  workpapers        Workpaper[]
+  auditTests        AuditTest[]
+  samplingWorksheets SamplingWorksheet[]
+  reports           Report[]
+  timeEntries       TimeEntry[]
+  checklists        ChecklistInstance[]
+  independenceDeclarations IndependenceDeclaration[]
+  approvals         Approval[]
+
+  // Provenance
+  createdById       String
+  createdAt         DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime           @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?          @db.Timestamptz(6)
+  version_          Int                @default(1) @map("_version")
+
+  // Full-text search (generated column via raw SQL migration)
+  // searchVector     Unsupported("tsvector")?
+
+  @@unique([tenantId, engagementNumber])
+  @@index([tenantId, status])
+  @@index([tenantId, engagementType])
+  @@index([tenantId, primaryPackCode, primaryPackVersion])
+  @@index([tenantId, createdAt])
+  @@index([annualPlanId])
+  @@index([universeEntityId])
+  @@map("engagements")
+  @@schema("public")
+}
+
+/// Which standard packs apply to this engagement (supports multi-standard).
+model EngagementStandardPack {
+  id                String     @id @default(cuid())
+  tenantId          String
+  engagementId      String
+  engagement        Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  packCode          String
+  packVersion       String
+  isPrimary         Boolean    @default(false)
+
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+
+  @@unique([engagementId, packCode, packVersion])
+  @@index([tenantId])
+  @@map("engagement_standard_packs")
+  @@schema("public")
+}
+
+/// Team members on an engagement.
+model EngagementTeamMember {
+  id               String     @id @default(cuid())
+  tenantId         String
+  engagementId     String
+  engagement       Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+  userId           String
+
+  role             String     // "AUDITOR_IN_CHARGE", "ENGAGEMENT_SUPERVISOR", etc.
+  hoursAllocated   Decimal?   @db.Decimal(10, 2)
+  assignedAt       DateTime   @default(now()) @db.Timestamptz(6)
+  removedAt        DateTime?  @db.Timestamptz(6)
+  removedReason    String?
+
+  createdAt        DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime   @updatedAt @db.Timestamptz(6)
+  version_         Int        @default(1) @map("_version")
+
+  @@unique([engagementId, userId, role])
+  @@index([tenantId, userId])
+  @@map("engagement_team_members")
+  @@schema("public")
+}
+
+/// Tracks progress through the engagement phases (pack-defined).
+model EngagementPhase {
+  id                String     @id @default(cuid())
+  tenantId          String
+  engagementId      String
+  engagement        Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  phaseCode         String     // References pack.phases[].code
+  phaseLabel        String     // Snapshot at time of engagement
+
+  enteredAt         DateTime?  @db.Timestamptz(6)
+  exitedAt          DateTime?  @db.Timestamptz(6)
+
+  exitCriteriaStatus Json      @default("{}")  // { criterionCode: 'met' | 'pending' | 'failed' }
+
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+
+  @@unique([engagementId, phaseCode])
+  @@index([tenantId, engagementId])
+  @@map("engagement_phases")
+  @@schema("public")
+}
+
+// ============================================================================
+// PLANNING
+// ============================================================================
+
+/// Planning documents (Audit Planning Memo, etc.)
+model PlanningDocument {
+  id                String     @id @default(cuid())
+  tenantId          String
+  engagementId      String
+  engagement        Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  templateCode      String     // References pack.templates[].code
+  title             String
+  status            String     @default("DRAFT")  // DRAFT, UNDER_REVIEW, APPROVED
+
+  // Section content stored as JSONB — keyed by section code from template
+  sections          Json       @default("{}")
+
+  // Approval
+  approvedById      String?
+  approvedAt        DateTime?  @db.Timestamptz(6)
+
+  // Versioning (amendments to approved planning docs)
+  documentVersion   Int        @default(1)
+  supersededById    String?    @unique  // Self-reference to new version
+  supersededBy      PlanningDocument? @relation("PlanningDocVersion", fields: [supersededById], references: [id])
+  supersedesFor     PlanningDocument[] @relation("PlanningDocVersion")
+
+  createdById       String
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@index([tenantId, engagementId])
+  @@index([status])
+  @@map("planning_documents")
+  @@schema("public")
+}
+
+// ============================================================================
+// FIELDWORK
+// ============================================================================
+
+/// Work programs — collections of procedures.
+model WorkProgram {
+  id                String     @id @default(cuid())
+  tenantId          String
+  engagementId      String
+  engagement        Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  title             String
+  objective         String?    @db.Text
+  scope             String?    @db.Text
+  status            String     @default("NOT_STARTED")
+
+  procedures        WorkProgramProcedure[]
+
+  createdById       String
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@index([tenantId, engagementId])
+  @@map("work_programs")
+  @@schema("public")
+}
+
+model WorkProgramProcedure {
+  id                String       @id @default(cuid())
+  tenantId          String
+  workProgramId     String
+  workProgram       WorkProgram  @relation(fields: [workProgramId], references: [id], onDelete: Cascade)
+
+  order             Int
+  objective         String
+  procedureSteps    String       @db.Text
+  expectedEvidence  String?      @db.Text
+  assignedToId      String?
+
+  status            String       @default("NOT_STARTED")
+  completedAt       DateTime?    @db.Timestamptz(6)
+  reviewedById      String?
+  reviewedAt        DateTime?    @db.Timestamptz(6)
+
+  // Links
+  linkedWorkpapers  WorkpaperLink[]
+
+  createdAt         DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime     @updatedAt @db.Timestamptz(6)
+  version_          Int          @default(1) @map("_version")
+
+  @@index([tenantId, workProgramId])
+  @@map("work_program_procedures")
+  @@schema("public")
+}
+
+/// Observations found during fieldwork (may escalate to Findings).
+model Observation {
+  id                String     @id @default(cuid())
+  tenantId          String
+  engagementId      String
+  engagement        Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  title             String
+  description       String     @db.Text
+  severity          String?
+
+  status            String     @default("OPEN")  // OPEN, UNDER_REVIEW, ESCALATED, CLOSED
+
+  // If escalated to a finding
+  escalatedFindingId String?    @unique
+  escalatedFinding  Finding?   @relation(fields: [escalatedFindingId], references: [id])
+  escalatedAt       DateTime?  @db.Timestamptz(6)
+
+  // Evidence
+  linkedWorkpapers  WorkpaperLink[]
+
+  createdById       String
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@index([tenantId, engagementId, status])
+  @@map("observations")
+  @@schema("public")
+}
+
+// ============================================================================
+// FINDINGS — The core audit output, with immutability after issuance
+// ============================================================================
+
+/// A finding. Stores element values polymorphically in JSONB keyed by
+/// pack's findingElements[].code — enabling variable 3-5 element structures
+/// across standards.
+model Finding {
+  id                String     @id @default(cuid())
+  tenantId          String
+  engagementId      String
+  engagement        Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  // Identity
+  findingNumber     String     // Engagement-unique (e.g., "FIN-2026-001-001")
+  title             String
+
+  // Standard-specific element values (JSONB)
+  // Schema: { "CRITERIA": "text...", "CONDITION": "text...", "CAUSE": "text...", "EFFECT": "text..." }
+  // For IIA 5 elements, also "RECOMMENDATION": "text..."
+  // For SOX: also "SEVERITY": "MATERIAL_WEAKNESS", "COMPENSATING_CONTROLS": "...", etc.
+  elementValues     Json
+
+  // Classification (from pack findingClassifications scheme)
+  classification    String?    // Code (e.g., "MATERIAL_WEAKNESS", "MAJOR_NC")
+  classificationScheme String? // Which scheme (e.g., "GAGAS_DEFICIENCY_TIER")
+  riskRating        String?
+
+  // Status
+  status            FindingStatus @default(DRAFT)
+
+  // Questioned Costs (Single Audit overlay)
+  questionedCostsKnown   Decimal?    @db.Decimal(15, 2)
+  questionedCostsLikely  Decimal?    @db.Decimal(15, 2)
+  federalProgramAln      String?     // Assistance Listing Number (formerly CFDA)
+
+  // Repeat finding (Single Audit, §6.39, IIA Standard 15.x)
+  isRepeatFinding   Boolean    @default(false)
+  priorFindingId    String?
+  priorFinding      Finding?   @relation("RepeatFinding", fields: [priorFindingId], references: [id])
+  repeatedBy        Finding[]  @relation("RepeatFinding")
+
+  // Bitemporal
+  validFrom         DateTime?  @db.Date  // Real-world date finding was true
+  validTo           DateTime?  @db.Date  // Real-world date finding condition ended (if resolved)
+
+  // Immutability after issuance
+  lockedAt          DateTime?  @db.Timestamptz(6)
+  lockedBy          String?
+
+  // E-signature on issuance (hash of finding content signed by approver)
+  signedHash        String?
+  signedBy          String?
+  signedAt          DateTime?  @db.Timestamptz(6)
+  signatureAlgorithm String?   @default("SHA256")
+
+  // Relations
+  recommendations   Recommendation[]
+  approvals         Approval[] @relation("FindingApprovals")
+  linkedWorkpapers  WorkpaperLink[]
+  linkedTests       FindingTestLink[]
+  managementResponse ManagementResponse?
+
+  // Custom fields
+  customFields      Json       @default("{}")
+
+  createdById       String
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@unique([tenantId, findingNumber])
+  @@index([tenantId, engagementId, status])
+  @@index([tenantId, classification])
+  @@index([tenantId, riskRating])
+  @@index([tenantId, createdAt])
+  @@index([priorFindingId])
+  @@map("findings")
+  @@schema("public")
+}
+
+/// Management response to findings.
+model ManagementResponse {
+  id                String     @id @default(cuid())
+  tenantId          String
+  findingId         String     @unique
+  finding           Finding    @relation(fields: [findingId], references: [id], onDelete: Cascade)
+
+  responseType      String     // 'AGREE', 'DISAGREE', 'PARTIAL'
+  responseText      String     @db.Text
+  agreedActionPlan  String?    @db.Text
+  targetDate        DateTime?  @db.Date
+  responsiblePerson String?
+
+  submittedById     String
+  submittedAt       DateTime   @default(now()) @db.Timestamptz(6)
+
+  // Auditor evaluation
+  auditorNotes      String?    @db.Text
+  evaluatedById     String?
+  evaluatedAt       DateTime?  @db.Timestamptz(6)
+
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@index([tenantId, findingId])
+  @@map("management_responses")
+  @@schema("public")
+}
+
+/// Recommendations (some standards store inline in finding; model allows either).
+model Recommendation {
+  id                String     @id @default(cuid())
+  tenantId          String
+  findingId         String
+  finding           Finding    @relation(fields: [findingId], references: [id], onDelete: Cascade)
+
+  title             String
+  description       String     @db.Text
+  priority          String?
+
+  status            RecommendationStatus @default(OPEN)
+
+  // Implementation
+  targetDate        DateTime?  @db.Date
+  actualDate        DateTime?  @db.Date
+  responsiblePerson String?
+
+  // Risk acceptance (IIA Standard 15.x)
+  riskAccepted      Boolean    @default(false)
+  riskAcceptedById  String?
+  riskAcceptedAt    DateTime?  @db.Timestamptz(6)
+  riskAcceptanceRationale String? @db.Text
+
+  // Relations
+  correctiveActions CorrectiveAction[]
+
+  createdById       String
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@index([tenantId, findingId])
+  @@index([tenantId, status])
+  @@map("recommendations")
+  @@schema("public")
+}
+
+/// Corrective Action Plans.
+model CorrectiveAction {
+  id                String     @id @default(cuid())
+  tenantId          String
+  recommendationId  String
+  recommendation    Recommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+
+  title             String
+  description       String     @db.Text
+  status            CAPStatus  @default(NOT_STARTED)
+
+  // Dates
+  dueDate           DateTime?  @db.Date
+  startedAt         DateTime?  @db.Timestamptz(6)
+  completedAt       DateTime?  @db.Timestamptz(6)
+
+  // Evidence of completion
+  evidenceDescription String?  @db.Text
+  evidenceFileIds   String[]   // Array of file IDs
+
+  // Verification
+  verifiedById      String?
+  verifiedAt        DateTime?  @db.Timestamptz(6)
+  verificationNotes String?    @db.Text
+
+  // Overdue escalation
+  overdueAt         DateTime?  @db.Timestamptz(6)
+  escalatedAt       DateTime?  @db.Timestamptz(6)
+  escalatedTo       String?
+
+  createdById       String
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@index([tenantId, recommendationId])
+  @@index([tenantId, status, dueDate])
+  @@map("corrective_actions")
+  @@schema("public")
+}
+
+// ============================================================================
+// WORKPAPERS — Document management
+// ============================================================================
+
+model Workpaper {
+  id                String     @id @default(cuid())
+  tenantId          String
+  engagementId      String
+  engagement        Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  reference         String     // Workpaper number (e.g., "WP-2026-001-015")
+  title             String
+  description       String?    @db.Text
+  category          String?    // 'Planning', 'Fieldwork', 'Evidence', 'Correspondence', 'Reports'
+
+  status            WorkpaperStatus @default(DRAFT)
+
+  // Current version reference
+  currentVersionId  String?    @unique
+  currentVersion    WorkpaperVersion? @relation("CurrentVersion", fields: [currentVersionId], references: [id])
+  versions          WorkpaperVersion[] @relation("WorkpaperVersions")
+
+  // Review
+  reviewedById      String?
+  reviewedAt        DateTime?  @db.Timestamptz(6)
+  reviewNotes       String?    @db.Text
+
+  // E-signature on approval
+  signedHash        String?
+  signedBy          String?
+  signedAt          DateTime?  @db.Timestamptz(6)
+
+  // Chain of custody (GAGAS §8.51 "experienced auditor" standard)
+  preparedById      String
+  preparedAt        DateTime   @default(now()) @db.Timestamptz(6)
+
+  // Links
+  procedureLinks    WorkpaperLink[]
+
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@unique([tenantId, reference])
+  @@index([tenantId, engagementId])
+  @@index([tenantId, status])
+  @@index([tenantId, category])
+  @@map("workpapers")
+  @@schema("public")
+}
+
+model WorkpaperVersion {
+  id                String     @id @default(cuid())
+  tenantId          String
+  workpaperId       String
+  workpaper         Workpaper  @relation("WorkpaperVersions", fields: [workpaperId], references: [id], onDelete: Cascade)
+  currentFor        Workpaper? @relation("CurrentVersion")
+
+  versionNumber     Int
+  fileId            String     @unique
+  file              File       @relation(fields: [fileId], references: [id])
+
+  changeNotes       String?    @db.Text
+  uploadedById      String
+  uploadedAt        DateTime   @default(now()) @db.Timestamptz(6)
+
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+
+  @@unique([workpaperId, versionNumber])
+  @@index([tenantId, workpaperId])
+  @@map("workpaper_versions")
+  @@schema("public")
+}
+
+/// Polymorphic link between workpapers and various entities (findings, procedures, etc.)
+model WorkpaperLink {
+  id                String     @id @default(cuid())
+  tenantId          String
+  workpaperId       String
+  workpaper         Workpaper  @relation(fields: [workpaperId], references: [id], onDelete: Cascade)
+
+  // Polymorphic target
+  linkedEntityType  String     // 'finding', 'procedure', 'observation', 'test', 'recommendation'
+  linkedEntityId    String
+
+  // Relations to specific entities (enforce via @@unique and app-layer validation)
+  findingId         String?
+  finding           Finding?   @relation(fields: [findingId], references: [id], onDelete: Cascade)
+  procedureId       String?
+  procedure         WorkProgramProcedure? @relation(fields: [procedureId], references: [id], onDelete: Cascade)
+  observationId     String?
+  observation       Observation? @relation(fields: [observationId], references: [id], onDelete: Cascade)
+  testId            String?
+  test              AuditTest? @relation(fields: [testId], references: [id], onDelete: Cascade)
+
+  role              String?    // 'primary_evidence', 'supporting', 'corroborating'
+
+  createdById       String
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+
+  @@unique([workpaperId, linkedEntityType, linkedEntityId])
+  @@index([tenantId, workpaperId])
+  @@index([linkedEntityType, linkedEntityId])
+  @@map("workpaper_links")
+  @@schema("public")
+}
+
+// ============================================================================
+// AUDIT TESTS (SOX, ISO controls testing)
+// ============================================================================
+
+model AuditTest {
+  id                String     @id @default(cuid())
+  tenantId          String
+  engagementId      String
+  engagement        Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  testReference     String     // e.g., "TEST-001"
+  title             String
+  objective         String     @db.Text
+
+  // SOX-specific
+  controlId         String?    // External control library reference
+  controlDescription String?   @db.Text
+  assertionTested   String?    // 'existence', 'completeness', etc.
+  testType          String?    // 'TOD', 'TOE', 'walkthrough', 'substantive'
+
+  // Sampling
+  samplingWorksheetId String?
+  samplingWorksheet SamplingWorksheet? @relation(fields: [samplingWorksheetId], references: [id])
+
+  // Results
+  status            String     @default("NOT_STARTED")
+  sampleSize        Int?
+  exceptionsCount   Int?
+  conclusion        String?    @db.Text
+  conclusionType    String?    // 'effective', 'ineffective', 'deficiency'
+
+  // Links
+  workpaperLinks    WorkpaperLink[]
+  findingLinks      FindingTestLink[]
+
+  createdById       String
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@index([tenantId, engagementId])
+  @@map("audit_tests")
+  @@schema("public")
+}
+
+model FindingTestLink {
+  id                String     @id @default(cuid())
+  tenantId          String
+  findingId         String
+  finding           Finding    @relation(fields: [findingId], references: [id], onDelete: Cascade)
+  testId            String
+  test              AuditTest  @relation(fields: [testId], references: [id], onDelete: Cascade)
+
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+
+  @@unique([findingId, testId])
+  @@index([tenantId])
+  @@map("finding_test_links")
+  @@schema("public")
+}
+
+// ============================================================================
+// SAMPLING
+// ============================================================================
+
+model SamplingWorksheet {
+  id                String     @id @default(cuid())
+  tenantId          String
+  engagementId      String
+  engagement        Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  title             String
+  method            String     // 'RANDOM', 'SYSTEMATIC', 'STRATIFIED', 'MUS', 'JUDGMENTAL'
+  status            String     @default("DRAFT")
+
+  // Statistical parameters
+  populationSize    Int?
+  populationValue   Decimal?   @db.Decimal(15, 2)
+  confidenceLevel   Decimal?   @db.Decimal(5, 2)
+  tolerableDeviationRate Decimal? @db.Decimal(5, 2)
+  expectedDeviationRate  Decimal? @db.Decimal(5, 2)
+  tolerableMisstatement  Decimal? @db.Decimal(15, 2)
+
+  // Calculated
+  sampleSize        Int?
+  selectedItems     Json?      // Array of selected item IDs
+
+  // Results
+  deviationsFound   Int?
+  projectedMisstatement Decimal? @db.Decimal(15, 2)
+  conclusion        String?    @db.Text
+
+  // Related tests
+  audits            AuditTest[]
+
+  createdById       String
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@index([tenantId, engagementId])
+  @@map("sampling_worksheets")
+  @@schema("public")
+}
+
+// ============================================================================
+// REPORTS
+// ============================================================================
+
+model Report {
+  id                String     @id @default(cuid())
+  tenantId          String
+  engagementId      String
+  engagement        Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  reportCode        String     // References pack.reportDefinitions[].code
+  title             String
+  reportType        String     // 'Draft', 'Final', 'Addendum'
+  reportNumber      String?    // Tenant-unique
+  status            String     @default("DRAFT")
+
+  // Content (sections as JSONB keyed by pack reportDefinitions section codes)
+  content           Json       @default("{}")
+
+  // Versioning
+  reportVersion     Int        @default(1)
+  supersededById    String?    @unique
+  supersededBy      Report?    @relation("ReportVersion", fields: [supersededById], references: [id])
+  supersedesFor     Report[]   @relation("ReportVersion")
+
+  // Generated PDF
+  pdfFileId         String?    @unique
+  pdfFile           File?      @relation(fields: [pdfFileId], references: [id])
+  pdfGeneratedAt    DateTime?  @db.Timestamptz(6)
+
+  // E-signature on issuance
+  signedHash        String?
+  signedBy          String?
+  signedAt          DateTime?  @db.Timestamptz(6)
+  signatureAlgorithm String?   @default("SHA256")
+
+  // Issuance
+  issuedAt          DateTime?  @db.Timestamptz(6)
+  issuedBy          String?
+  distributedTo     Json?      // Array of recipient info
+
+  // Immutability
+  lockedAt          DateTime?  @db.Timestamptz(6)
+  lockedBy          String?
+
+  createdById       String
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@unique([tenantId, reportNumber])
+  @@index([tenantId, engagementId])
+  @@index([tenantId, status])
+  @@map("reports")
+  @@schema("public")
+}
+
+// ============================================================================
+// QUALITY ASSURANCE — Checklists, Independence, QAIP, Peer Review
+// ============================================================================
+
+/// Instance of a checklist (from pack) being completed for an engagement.
+model ChecklistInstance {
+  id                String     @id @default(cuid())
+  tenantId          String
+  engagementId      String?
+  engagement        Engagement? @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  checklistCode     String     // References pack.checklists[].code
+  checklistVersion  String     // Pack version (preserved for audit trail)
+
+  status            String     @default("IN_PROGRESS")
+  completionDate    DateTime?  @db.Timestamptz(6)
+  passingResult     String?    // 'PASS', 'FAIL', 'PARTIAL'
+
+  // Responses keyed by item code
+  responses         Json       @default("{}")  // { "itemCode": { value: ..., notes: ..., evidence: [fileIds] } }
+
+  // Assignee
+  assignedToId      String?
+  assignedRole      String?
+
+  // Review
+  reviewedById      String?
+  reviewedAt        DateTime?  @db.Timestamptz(6)
+  reviewNotes       String?    @db.Text
+
+  createdById       String
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@index([tenantId, engagementId])
+  @@index([tenantId, checklistCode])
+  @@index([tenantId, status])
+  @@map("checklist_instances")
+  @@schema("public")
+}
+
+/// Independence declarations per team member per engagement.
+model IndependenceDeclaration {
+  id                String     @id @default(cuid())
+  tenantId          String
+  engagementId      String
+  engagement        Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+  userId            String
+
+  packCode          String
+  packVersion       String
+
+  // Declaration responses (keyed by question code from pack)
+  responses         Json       @default("{}")
+
+  // Impairments identified
+  hasImpairments    Boolean    @default(false)
+  impairmentDetails String?    @db.Text
+  safeguards        String?    @db.Text
+
+  // E-signature
+  signedHash        String?
+  signedBy          String
+  signedAt          DateTime   @db.Timestamptz(6)
+  signatureAlgorithm String?   @default("SHA256")
+
+  // Immutability — declarations are frozen after signing
+  lockedAt          DateTime?  @db.Timestamptz(6)
+
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@unique([engagementId, userId])
+  @@index([tenantId, userId])
+  @@index([tenantId, hasImpairments])
+  @@map("independence_declarations")
+  @@schema("public")
+}
+
+/// Peer Review records (GAGAS 3-year cycle; ISO surveillance).
+model PeerReview {
+  id                String     @id @default(cuid())
+  tenantId          String
+
+  reviewType        String     // 'EXTERNAL_PEER_REVIEW', 'QAIP_EXTERNAL', 'SURVEILLANCE'
+  packCode          String     // Which standard's peer review cycle
+  packVersion       String
+
+  reviewStartDate   DateTime   @db.Date
+  reviewEndDate     DateTime?  @db.Date
+  nextReviewDueDate DateTime?  @db.Date
+
+  reviewerOrganization String
+  reviewerContact   Json?
+
+  rating            String?    // 'PASS', 'PASS_WITH_DEFICIENCY', 'FAIL', 'GENERALLY_CONFORMS', 'PARTIALLY_CONFORMS', 'DOES_NOT_CONFORM'
+  findings          Json?      // Structured findings
+  actionPlan        String?    @db.Text
+  actionPlanStatus  String?
+
+  // Report file
+  reportFileId      String?
+  reportFile        File?      @relation(fields: [reportFileId], references: [id])
+
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@index([tenantId, reviewType])
+  @@index([tenantId, nextReviewDueDate])
+  @@map("peer_reviews")
+  @@schema("public")
+}
+
+// ============================================================================
+// STAFF, TIME, CPE
+// ============================================================================
+
+model Certification {
+  id                String     @id @default(cuid())
+  tenantId          String
+  userId            String
+  user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  certificationType String     // 'CIA', 'CPA', 'CISA', 'CRMA', 'GAGAS_AUDITOR', etc.
+  certificationNumber String?
+  issuingBody       String
+
+  issuedDate        DateTime   @db.Date
+  expiryDate        DateTime?  @db.Date
+  lastRenewedDate   DateTime?  @db.Date
+
+  status            String     @default("ACTIVE")
+
+  // Evidence
+  certificateFileId String?
+  certificateFile   File?      @relation(fields: [certificateFileId], references: [id])
+
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@unique([userId, certificationType])
+  @@index([tenantId, userId])
+  @@index([tenantId, expiryDate])
+  @@map("certifications")
+  @@schema("public")
+}
+
+model CPERecord {
+  id                String     @id @default(cuid())
+  tenantId          String
+  userId            String
+  user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  activityDate      DateTime   @db.Date
+  activityTitle     String
+  activityType      String     // 'formal_course', 'conference', 'self_study', 'teaching', 'publishing'
+  provider          String?
+
+  hours             Decimal    @db.Decimal(5, 2)
+  topic             String?    // For GAGAS: government auditing topic tracking
+  topicCategory     String?    // Canonical category for topic requirements
+
+  // Evidence
+  certificateFileId String?
+  certificateFile   File?      @relation(fields: [certificateFileId], references: [id])
+
+  // Applicable standards (user may apply same CPE to multiple certifications)
+  applicableCertifications String[]  // e.g., ['GAGAS', 'CIA']
+
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@index([tenantId, userId, activityDate])
+  @@index([tenantId, activityDate])
+  @@map("cpe_records")
+  @@schema("public")
+}
+
+model TimeEntry {
+  id                String     @id @default(cuid())
+  tenantId          String
+  userId            String
+  engagementId      String?
+  engagement        Engagement? @relation(fields: [engagementId], references: [id])
+
+  entryDate         DateTime   @db.Date
+  hours             Decimal    @db.Decimal(5, 2)
+  category          String     // 'Planning', 'Fieldwork', 'Reporting', 'Admin', 'CPE', 'Leave'
+  description       String?    @db.Text
+
+  status            String     @default("DRAFT")  // 'DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED'
+  submittedAt       DateTime?  @db.Timestamptz(6)
+  approvedById      String?
+  approvedAt        DateTime?  @db.Timestamptz(6)
+
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@index([tenantId, userId, entryDate])
+  @@index([tenantId, engagementId, entryDate])
+  @@index([tenantId, status])
+  @@map("time_entries")
+  @@schema("public")
+}
+
+// ============================================================================
+// AUDIT UNIVERSE AND PLANNING
+// ============================================================================
+
+model AuditUniverseEntity {
+  id                String     @id @default(cuid())
+  tenantId          String
+  tenant            Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  code              String
+  name              String
+  entityType        String     // 'process', 'department', 'system', 'program', 'subsidiary'
+  parentId          String?
+  parent            AuditUniverseEntity? @relation("EntityHierarchy", fields: [parentId], references: [id])
+  children          AuditUniverseEntity[] @relation("EntityHierarchy")
+
+  description       String?    @db.Text
+  owner             String?
+
+  // Risk factors (structured)
+  riskFactors       Json       @default("{}")
+  inherentRiskScore Decimal?   @db.Decimal(5, 2)
+  residualRiskScore Decimal?   @db.Decimal(5, 2)
+  lastRiskAssessment DateTime? @db.Date
+
+  // Audit history
+  lastAuditedDate   DateTime?  @db.Date
+  auditCycleMonths  Int?
+
+  engagements       Engagement[]
+
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@unique([tenantId, code])
+  @@index([tenantId, entityType])
+  @@index([tenantId, residualRiskScore])
+  @@map("audit_universe_entities")
+  @@schema("public")
+}
+
+model AnnualAuditPlan {
+  id                String     @id @default(cuid())
+  tenantId          String
+  tenant            Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  fiscalYear        Int
+  title             String
+  status            String     @default("DRAFT")  // 'DRAFT', 'APPROVED', 'ACTIVE', 'CLOSED'
+
+  // Plan content
+  totalBudgetedHours Decimal?  @db.Decimal(10, 2)
+  totalBudgetAmount Decimal?   @db.Decimal(15, 2)
+
+  // Board approval
+  approvedById      String?
+  approvedAt        DateTime?  @db.Timestamptz(6)
+
+  engagements       Engagement[]
+
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@unique([tenantId, fiscalYear])
+  @@index([tenantId, status])
+  @@map("annual_audit_plans")
+  @@schema("public")
+}
+
+// ============================================================================
+// WORKFLOW ENGINE
+// ============================================================================
+
+/// Approvals — polymorphic workflow records.
+model Approval {
+  id                String     @id @default(cuid())
+  tenantId          String
+
+  // Polymorphic entity reference
+  entityType        String     // 'engagement', 'finding', 'report', 'planning_document', 'workpaper', 'independence_declaration'
+  entityId          String
+
+  // For findings specifically (typed relation)
+  findingId         String?
+  finding           Finding?   @relation("FindingApprovals", fields: [findingId], references: [id], onDelete: Cascade)
+  engagementId      String?
+  engagement        Engagement? @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  // Workflow context
+  workflowCode      String
+  workflowVersion   String     // Pack version at time of creation
+  stepOrder         Int
+  stepLabel         String     // Snapshot
+  totalSteps        Int
+
+  // Status
+  status            ApprovalStatus @default(PENDING)
+
+  // Assignment
+  requestedById     String
+  requestedAt       DateTime   @default(now()) @db.Timestamptz(6)
+  assignedToId      String
+  requiredRole      String
+
+  // Decision
+  decidedAt         DateTime?  @db.Timestamptz(6)
+  decisionComments  String?    @db.Text
+
+  // Delegation
+  delegatedFromId   String?
+  delegatedAt       DateTime?  @db.Timestamptz(6)
+
+  // SLA
+  slaDueAt          DateTime?  @db.Timestamptz(6)
+  slaBreachedAt     DateTime?  @db.Timestamptz(6)
+
+  // E-signature (for formal approvals)
+  signedHash        String?
+  signedBy          String?
+  signedAt          DateTime?  @db.Timestamptz(6)
+
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@index([tenantId, entityType, entityId])
+  @@index([tenantId, assignedToId, status])
+  @@index([tenantId, status, slaDueAt])
+  @@map("approvals")
+  @@schema("public")
+}
+
+// ============================================================================
+// NOTIFICATIONS
+// ============================================================================
+
+model Notification {
+  id                String     @id @default(cuid())
+  tenantId          String
+  userId            String
+  user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type              String     // 'approval_requested', 'approval_granted', 'cap_overdue', etc.
+  title             String
+  body              String     @db.Text
+  actionUrl         String?
+
+  // Entity reference
+  entityType        String?
+  entityId          String?
+
+  // Delivery
+  channels          NotificationChannel[]
+  isRead            Boolean    @default(false)
+  readAt            DateTime?  @db.Timestamptz(6)
+
+  // Email/SMS delivery tracking
+  emailSentAt       DateTime?  @db.Timestamptz(6)
+  smsSentAt         DateTime?  @db.Timestamptz(6)
+
+  // Digest consolidation
+  batchId           String?
+
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  expiresAt         DateTime?  @db.Timestamptz(6)
+
+  @@index([tenantId, userId, isRead])
+  @@index([tenantId, createdAt])
+  @@index([expiresAt])
+  @@map("notifications")
+  @@schema("public")
+}
+
+// ============================================================================
+// FILES — S3-backed file metadata
+// ============================================================================
+
+model File {
+  id                String     @id @default(cuid())
+  tenantId          String
+
+  // Metadata
+  originalFilename  String
+  storageKey        String     @unique  // S3 key
+  storageBucket     String
+  contentType       String
+  fileSize          BigInt
+  fileHash          String     // SHA-256 for integrity
+
+  // Encryption
+  encryptionKeyId   String?
+  encryptionAlgorithm String?  @default("AES-256-GCM")
+
+  // Organization
+  folderPath        String?
+
+  // Relations
+  workpaperVersions WorkpaperVersion[]
+  reports           Report[]
+  cpeRecords        CPERecord[]
+  certifications    Certification[]
+  peerReviews       PeerReview[]
+
+  // Virus scanning
+  scannedAt         DateTime?  @db.Timestamptz(6)
+  scanResult        String?    // 'clean', 'infected', 'error'
+  scanEngine        String?
+
+  // Lifecycle
+  retentionClass    String?    // 'audit_evidence_7y', 'admin_2y', 'temp_30d'
+  archivedAt        DateTime?  @db.Timestamptz(6)
+
+  uploadedById      String
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@index([tenantId])
+  @@index([fileHash])
+  @@map("files")
+  @@schema("public")
+}
+
+// ============================================================================
+// AUDIT SCHEMA — Tamper-evident audit trail
+// ============================================================================
+
+/// Hash-chained audit log. Partitioned by month.
+/// Append-only; updates and deletes are prevented by policy.
+model AuditLog {
+  id                String     @default(cuid())
+  tenantId          String?    // Null for platform-level events
+
+  // Event details
+  action            AuditLogAction
+  entityType        String     // 'engagement', 'finding', 'user', etc.
+  entityId          String?
+
+  // User context
+  userId            String?
+  userEmail         String?    // Snapshot (in case user deleted)
+  sessionId         String?
+  impersonatedBy    String?    // For superadmin audits
+
+  // Request context
+  ipAddress         String?    @db.Inet
+  userAgent         String?
+
+  // Change details
+  beforeData        Json?
+  afterData         Json?
+  changesSummary    String?
+
+  // Tamper-evidence hash chain
+  previousHash      String?    // SHA-256 of previous row
+  contentHash       String     // SHA-256 of this row's key fields
+  chainPosition     BigInt     @default(autoincrement())
+
+  // Timestamp
+  loggedAt          DateTime   @default(now()) @db.Timestamptz(6)
+
+  @@id([id, loggedAt])  // Composite PK for partitioning
+  @@index([tenantId, entityType, entityId, loggedAt])
+  @@index([tenantId, userId, loggedAt])
+  @@index([tenantId, action, loggedAt])
+  @@index([chainPosition])
+  @@map("audit_log")
+  @@schema("audit")
+}
+
+/// Workflow event sourcing.
+model WorkflowEvent {
+  id                String     @default(cuid())
+  tenantId          String
+  approvalId        String?
+  entityType        String
+  entityId          String
+
+  eventType         String     // 'submitted', 'approved', 'rejected', 'delegated', 'recalled'
+  eventData         Json
+  actorId           String
+
+  eventTime         DateTime   @default(now()) @db.Timestamptz(6)
+
+  @@id([id, eventTime])
+  @@index([tenantId, entityType, entityId, eventTime])
+  @@index([tenantId, approvalId])
+  @@map("workflow_events")
+  @@schema("audit")
+}
+
+/// Idempotency keys to prevent duplicate mutations.
+model IdempotencyKey {
+  key               String     @id
+  tenantId          String
+  userId            String
+  endpoint          String
+  responseStatus    Int
+  responseBody      Json
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  expiresAt         DateTime   @db.Timestamptz(6)
+
+  @@index([tenantId, userId])
+  @@index([expiresAt])
+  @@map("idempotency_keys")
+  @@schema("audit")
+}
