@@ -1,0 +1,22 @@
+{
+  "name": "@aims/encryption",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Application-Layer Encryption (ALE) per ADR-0001. KMS-wrapped per-tenant DEKs.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "echo \"(tests added in Task 1.6 — ALE round-trip unit test)\" && exit 0",
+    "clean": "rm -rf dist .tsbuildinfo"
+  },
+  "dependencies": {
+    "@aws-sdk/client-kms": "^3.658.0"
+  }
+}

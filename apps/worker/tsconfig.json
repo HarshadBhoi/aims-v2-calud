@@ -1,0 +1,27 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "target": "ES2023",
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "verbatimModuleSyntax": false,
+    "isolatedModules": false,
+    "lib": ["ES2023"],
+    "types": ["node"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", ".tsbuildinfo"],
+  "references": [
+    { "path": "../../packages/prisma-client" },
+    { "path": "../../packages/encryption" },
+    { "path": "../../packages/validation" }
+  ]
+}
