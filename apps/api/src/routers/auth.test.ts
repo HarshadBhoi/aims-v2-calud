@@ -12,7 +12,11 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createEncryptionModule, createPrismaDekStore } from "@aims/encryption";
-import { createAdminPrismaClient, type AdminPrismaClient } from "@aims/prisma-client";
+import {
+  createAdminPrismaClient,
+  createTenantPrismaClient,
+  type AdminPrismaClient,
+} from "@aims/prisma-client";
 import { CreateKeyCommand, KMSClient } from "@aws-sdk/client-kms";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { generateKeyPair } from "jose";
@@ -176,9 +180,12 @@ beforeAll(async () => {
     refreshTokenTtlMs: config.refreshTokenTtlMs,
   });
 
+  const prismaTenant = createTenantPrismaClient({ datasources: { db: { url: dbUrl } } });
+
   services = {
     config,
     prisma,
+    prismaTenant,
     kmsClient,
     encryption,
     sessions: sessionModule,

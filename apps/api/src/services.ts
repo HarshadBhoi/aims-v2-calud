@@ -8,7 +8,12 @@
  */
 
 import { createEncryptionModule, createPrismaDekStore, type EncryptionModule } from "@aims/encryption";
-import { createAdminPrismaClient, type AdminPrismaClient } from "@aims/prisma-client";
+import {
+  createAdminPrismaClient,
+  createTenantPrismaClient,
+  type AdminPrismaClient,
+  type TenantPrismaClient,
+} from "@aims/prisma-client";
 import { KMSClient } from "@aws-sdk/client-kms";
 import { type KeyLike } from "jose";
 
@@ -18,7 +23,11 @@ import { type Config } from "./config";
 
 export type Services = {
   readonly config: Config;
+  /** Admin client — no tenant extension. Use for auth/bootstrap only. */
   readonly prisma: AdminPrismaClient;
+  /** Tenant-scoped client — reads/writes are auto-filtered by the active
+   *  AsyncLocalStorage tenant context. Use inside authenticated procedures. */
+  readonly prismaTenant: TenantPrismaClient;
   readonly kmsClient: KMSClient;
   readonly encryption: EncryptionModule;
   readonly sessions: SessionModule;
@@ -28,6 +37,7 @@ export type Services = {
 
 export async function createServices(config: Config): Promise<Services> {
   const prisma = createAdminPrismaClient();
+  const prismaTenant = createTenantPrismaClient();
 
   const kmsClient = new KMSClient({
     region: config.awsRegion,
@@ -55,6 +65,7 @@ export async function createServices(config: Config): Promise<Services> {
   return {
     config,
     prisma,
+    prismaTenant,
     kmsClient,
     encryption,
     sessions,
@@ -65,5 +76,5 @@ export async function createServices(config: Config): Promise<Services> {
 
 export async function disposeServices(services: Services): Promise<void> {
   services.kmsClient.destroy();
-  await services.prisma.$disconnect();
+  await Promise.all([services.prisma.$disconnect(), services.prismaTenant.$disconnect()]);
 }

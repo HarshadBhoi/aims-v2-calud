@@ -9,11 +9,15 @@
  *                            step-up)
  */
 
-import { runWithTenantContext } from "@aims/prisma-client";
+import { type TenantPrismaClient, runWithTenantContext } from "@aims/prisma-client";
 import { TRPCError, initTRPC } from "@trpc/server";
 import superjson from "superjson";
 
 import { type AuthenticatedSession, type RequestContext } from "./context";
+
+/** Convenience alias for the tenant-scoped Prisma client, used by resolvers
+ *  and business-logic modules that run inside an authenticated procedure. */
+export type AuthedPrisma = TenantPrismaClient;
 
 const t = initTRPC.context<RequestContext>().create({
   transformer: superjson,

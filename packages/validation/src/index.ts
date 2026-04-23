@@ -1,16 +1,11 @@
 /**
- * @aims/validation
+ * @aims/validation — Shared Zod schemas + inferred types.
  *
- * Shared Zod schemas. Consumed by apps/web, apps/api, and apps/worker so that
- * the wire contract is a single source of truth.
- *
- * SLICE A TASK: Schemas accrue task-by-task:
- *   - Task 2.5: Engagement schemas (create/get/list input-output pairs)
- *   - Task 2.6: Pack schemas (attach, resolve)
- *   - Task 3.2: Finding schemas (create, updateElement, submitForReview, approve)
- *   - Task 4.1: Report schemas
- *
- * See VERTICAL-SLICE-PLAN.md §3.2 for the API procedure surface.
+ * Every wire-format input and output is defined here. apps/api uses these
+ * for procedure input validation + response typing; apps/web uses them for
+ * form validation + tRPC type inference.
  */
 
-export const PLACEHOLDER = true as const;
+export * from "./common";
+export * from "./engagement";
+export * from "./pack";
