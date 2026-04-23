@@ -18,7 +18,7 @@ export type PrismaLike = {
   tenantKey: {
     findUnique(args: { where: { tenantId: string } }): Promise<{
       tenantId: string;
-      wrappedDek: Uint8Array | Buffer;
+      wrappedDek: Buffer;
       kmsKeyArn: string;
       dekVersion: number;
     } | null>;
@@ -27,12 +27,12 @@ export type PrismaLike = {
       where: { tenantId: string };
       create: {
         tenantId: string;
-        wrappedDek: Uint8Array | Buffer;
+        wrappedDek: Buffer;
         kmsKeyArn: string;
         dekVersion: number;
       };
       update: {
-        wrappedDek: Uint8Array | Buffer;
+        wrappedDek: Buffer;
         kmsKeyArn: string;
         dekVersion: number;
         rotatedAt: Date;

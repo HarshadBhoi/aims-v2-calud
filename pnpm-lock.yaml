@@ -220,6 +220,12 @@ importers:
         specifier: ^5.22.0
         version: 5.22.0(prisma@5.22.0)
     devDependencies:
+      '@aims/encryption':
+        specifier: workspace:*
+        version: link:../encryption
+      '@aws-sdk/client-kms':
+        specifier: ^3.658.0
+        version: 3.1035.0
       '@testcontainers/postgresql':
         specifier: ^10.13.2
         version: 10.28.0
