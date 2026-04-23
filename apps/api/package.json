@@ -19,14 +19,18 @@
     "@aims/encryption": "workspace:*",
     "@aims/prisma-client": "workspace:*",
     "@aims/validation": "workspace:*",
+    "@aws-sdk/client-kms": "^3.658.0",
+    "@fastify/cookie": "^11.0.1",
     "@fastify/cors": "^10.0.1",
     "@fastify/helmet": "^12.0.1",
     "@fastify/sensible": "^6.0.1",
     "@node-rs/argon2": "^2.0.2",
+    "@trpc/server": "^11.0.0-rc.593",
     "fastify": "^5.0.0",
     "jose": "^5.9.6",
     "otplib": "^12.0.1",
     "pino": "^9.4.0",
+    "superjson": "^2.2.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {

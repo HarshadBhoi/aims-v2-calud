@@ -1,57 +1,94 @@
 /**
- * AIMS v2 — Fastify API bootstrap.
+ * AIMS v2 — Fastify + tRPC API bootstrap.
  *
- * Per ADR-0003, Fastify is the hot path. NestJS is workers only (apps/worker).
+ * Per ADR-0003, Fastify is the hot path; NestJS lives in apps/worker.
  *
- * SLICE A SCAFFOLD: This is a minimal health-check service that proves the
- * workspace resolves. Real plumbing arrives across Tasks 2.4–3.6:
- *   - Task 2.4: tRPC on Fastify, context carries tenantId + userId + sessionId
- *   - Task 2.5: engagement procedures
- *   - Task 2.6: pack procedures
- *   - Task 3.2: finding procedures
- *   - Task 3.5: MFA step-up middleware
- *   - Task 4.1: report procedures
+ * On startup:
+ *   1. Load config from env
+ *   2. Build the Services container (Prisma, KMS, encryption, session, keys)
+ *   3. Register Fastify plugins (helmet, cors, cookie)
+ *   4. Mount the tRPC router at /trpc
+ *   5. Add a /health route
+ *   6. Listen
  *
- * See VERTICAL-SLICE-PLAN.md §4 Week 2–4.
+ * SIGINT / SIGTERM flush pending work and dispose services before exit.
  */
 
+import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import sensible from "@fastify/sensible";
-import Fastify from "fastify";
+import { fastifyTRPCPlugin } from "@trpc/server/adapters/fastify";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 
-const PORT = Number.parseInt(process.env["PORT"] ?? "3001", 10);
-const HOST = process.env["HOST"] ?? "0.0.0.0";
+import { loadConfig } from "./config";
+import { createContext } from "./context";
+import { appRouter } from "./routers/root";
+import { createServices, disposeServices, type Services } from "./services";
 
-const app = Fastify({
-  logger: {
-    level: process.env["LOG_LEVEL"] ?? "info",
-  },
-});
+async function bootstrap(): Promise<void> {
+  const config = loadConfig();
+  const services = await createServices(config);
 
-await app.register(helmet, { global: true });
-await app.register(cors, {
-  origin: process.env["CORS_ORIGIN"]?.split(",") ?? ["http://localhost:3000"],
-  credentials: true,
-});
-await app.register(sensible);
+  const app = Fastify({
+    logger: { level: process.env["LOG_LEVEL"] ?? "info" },
+    maxParamLength: 5000, // tRPC inputs via querystring can be long
+  });
 
-app.get("/health", () => ({
-  status: "ok",
-  service: "@aims/api",
-  version: "0.0.1",
-  timestamp: new Date().toISOString(),
-}));
+  await app.register(helmet, { global: true });
+  await app.register(cors, { origin: [...config.corsOrigins], credentials: true });
+  await app.register(cookie);
+  await app.register(sensible);
 
-app.get("/", () => ({
-  name: "AIMS v2 API",
-  docs: "See /product/api-catalog.md for the full surface (not yet implemented).",
-}));
+  app.get("/health", () => ({
+    status: "ok",
+    service: "@aims/api",
+    version: "0.0.1",
+    timestamp: new Date().toISOString(),
+  }));
 
-try {
-  await app.listen({ port: PORT, host: HOST });
-  app.log.info(`AIMS API listening on http://${HOST}:${PORT.toString()}`);
-} catch (error) {
-  app.log.error(error);
-  throw error;
+  await app.register(fastifyTRPCPlugin, {
+    prefix: "/trpc",
+    trpcOptions: {
+      router: appRouter,
+      createContext: ({ req, res }: { req: FastifyRequest; res: FastifyReply }) =>
+        createContext(services, req, res),
+    },
+  });
+
+  app.addHook("onClose", async () => {
+    await disposeServices(services);
+  });
+
+  installSignalHandlers(app, services);
+
+  try {
+    await app.listen({ port: config.port, host: config.host });
+    app.log.info(`AIMS API listening on http://${config.host}:${config.port.toString()}`);
+  } catch (error) {
+    app.log.error(error);
+    throw error;
+  }
 }
+
+function installSignalHandlers(app: FastifyInstance, services: Services): void {
+  const shutdown = async (signal: string): Promise<void> => {
+    app.log.info(`Received ${signal}, shutting down…`);
+    try {
+      await app.close();
+      await disposeServices(services);
+      process.exitCode = 0;
+    } catch (err) {
+      app.log.error({ err }, "Shutdown failed");
+      process.exitCode = 1;
+    }
+  };
+  process.on("SIGINT", () => {
+    void shutdown("SIGINT");
+  });
+  process.on("SIGTERM", () => {
+    void shutdown("SIGTERM");
+  });
+}
+
+await bootstrap();
