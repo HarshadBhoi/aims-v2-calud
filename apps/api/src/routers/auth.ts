@@ -6,6 +6,10 @@
  * the request).
  */
 
+// Side-effect import: brings in @fastify/cookie's type augmentation for
+// FastifyReply.setCookie / .clearCookie. Without it, consumers that
+// import this file (incl. apps/web via the AppRouter type) get TS2339.
+import "@fastify/cookie";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 

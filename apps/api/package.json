@@ -4,6 +4,12 @@
   "private": true,
   "description": "Fastify + tRPC hot-path API (ADR-0003). NestJS lives in apps/worker, NOT here.",
   "type": "module",
+  "exports": {
+    "./router": {
+      "types": "./src/routers/root.ts",
+      "default": "./src/routers/root.ts"
+    }
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -b",
