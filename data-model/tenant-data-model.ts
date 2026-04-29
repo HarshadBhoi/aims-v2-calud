@@ -457,7 +457,152 @@ export interface ReportArtifact {
 }
 
 // =============================================================================
-// 6. COMPLIANCE STATEMENT HELPERS
+// 6. CONTROL MATRIX (PRCM) — separate entity per ADR-0008
+// =============================================================================
+
+/**
+ * A process-risk-control matrix row. Documents the control universe for an
+ * engagement during planning; audit tests then *exercise* these controls.
+ *
+ * Multi-standard hooks:
+ *  - Control taxonomies (type/nature/frequency) are stable across COSO,
+ *    ISO 31000, COBIT, and GAGAS — modeled as enums.
+ *  - Pack-specific attributes (e.g., COSO 2013 component code, ISO 27001
+ *    Annex A clause, NIST 800-53 control ID) live in `customAttributes`
+ *    keyed by `StandardPackKey`.
+ *  - `packReference` is free text for the auditor's documented reference
+ *    (e.g., `"GAGAS §6.39"`, `"COSO 2013 PC3"`).
+ *
+ * See [ADR-0008](../references/adr/0008-control-matrix-as-separate-model.md)
+ * for the rationale on why PRCM is upstream of AuditTest rather than
+ * collapsed into it.
+ */
+export interface ControlMatrixRow {
+  id: string;
+  tenantId: TenantId;
+  engagementId: string;
+
+  /** Engagement-scoped codes for in-engagement cross-reference. */
+  riskCode: string;        // e.g., "R-001"
+  controlCode?: string;    // e.g., "C-001"
+
+  /** Process being controlled. */
+  processName: string;
+  processDescription?: RichText;
+
+  /** The risk this control addresses. */
+  riskDescription: RichText;
+  riskRating: 'HIGH' | 'MEDIUM' | 'LOW';
+  likelihood?: 'HIGH' | 'MEDIUM' | 'LOW';
+  impact?: 'HIGH' | 'MEDIUM' | 'LOW';
+
+  /** The control. */
+  controlDescription?: RichText;
+  controlType?: 'PREVENTIVE' | 'DETECTIVE' | 'CORRECTIVE' | 'DIRECTIVE';
+  controlNature?: 'MANUAL' | 'AUTOMATED' | 'IT_DEPENDENT_MANUAL';
+  controlFrequency?:
+    | 'CONTINUOUS'
+    | 'DAILY'
+    | 'WEEKLY'
+    | 'MONTHLY'
+    | 'QUARTERLY'
+    | 'ANNUALLY'
+    | 'AD_HOC';
+  controlOwnerId?: UserId;
+  controlEffectiveness?:
+    | 'EFFECTIVE'
+    | 'PARTIALLY_EFFECTIVE'
+    | 'INEFFECTIVE'
+    | 'NOT_TESTED';
+
+  residualRiskRating?: 'HIGH' | 'MEDIUM' | 'LOW';
+
+  /** Financial-audit assertions covered (existence, completeness, etc.). */
+  assertionsCovered?: string[];
+
+  /** Free-form auditor reference (e.g., `"GAGAS §6.39"`, `"COSO 2013 PC3"`). */
+  packReference?: string;
+
+  /** Pack-defined extensions, keyed by `StandardPackKey`. */
+  customAttributes: Record<StandardPackKey, Record<string, unknown>>;
+
+  status: 'DRAFT' | 'ACTIVE' | 'TESTED' | 'CLOSED';
+
+  preparedById: UserId;
+  reviewedById?: UserId;
+  reviewedAt?: IsoDateTime;
+
+  createdAt: IsoDateTime;
+  updatedAt: IsoDateTime;
+  version: number;
+}
+
+// =============================================================================
+// 7. RISK ASSESSMENT — per-fiscal-year history per ADR-0009
+// =============================================================================
+
+/**
+ * Annual risk assessment of an audit-universe entity. One row per
+ * (universeEntityId, fiscalYear); preserves year-over-year history that a
+ * JSONB snapshot on the universe entity cannot.
+ *
+ * Multi-standard hooks:
+ *  - Dimension sets vary by methodology — GAGAS 5-dim
+ *    (Strategic/Operational/Compliance/Financial/Reputational), COSO ERM,
+ *    ISO 31000. The pack defines which dimensions apply via its
+ *    `riskAssessmentMethodology`.
+ *  - `dimensions` is keyed by canonical dimension code; values are pack-
+ *    defined scale (typically 1-5).
+ *  - `methodology` carries the pack reference or free text describing how
+ *    the assessment was conducted.
+ *
+ * See [ADR-0009](../references/adr/0009-risk-assessment-history-table.md)
+ * for the rationale on why this is a separate table rather than a JSONB
+ * blob on the audit-universe entity.
+ */
+export interface RiskAssessment {
+  id: string;
+  tenantId: TenantId;
+  universeEntityId: string;
+
+  /** Fiscal year this assessment applies to. */
+  fiscalYear: number;
+
+  /**
+   * Pack-defined dimension scores. Keys are canonical dimension codes
+   * (e.g., GAGAS uses `STRATEGIC`, `OPERATIONAL`, `COMPLIANCE`,
+   * `FINANCIAL`, `REPUTATIONAL`); values are on the pack-defined scale.
+   *
+   * Example:
+   *   { "STRATEGIC": 4, "OPERATIONAL": 3, "COMPLIANCE": 5,
+   *     "FINANCIAL": 2, "REPUTATIONAL": 4 }
+   */
+  dimensions: Record<string, number>;
+
+  /** Composite score derived from `dimensions` (pack-defined formula). */
+  compositeScore?: number;
+
+  /** Categorical rating from `compositeScore` (pack-defined thresholds). */
+  riskRating?: 'HIGH' | 'MEDIUM' | 'LOW';
+
+  /** Methodology applied — pack reference or free text. */
+  methodology?: string;
+
+  notes?: RichText;
+
+  /** Provenance. */
+  assessedById: UserId;
+  assessmentDate: IsoDate;
+  approvedById?: UserId;
+  approvedAt?: IsoDateTime;
+
+  createdAt: IsoDateTime;
+  updatedAt: IsoDateTime;
+  version: number;
+}
+
+// =============================================================================
+// 8. COMPLIANCE STATEMENT HELPERS
 // =============================================================================
 
 /**

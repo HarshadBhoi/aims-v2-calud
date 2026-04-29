@@ -1,5 +1,7 @@
 # Phase 1 — Foundation
 
+> **⚠ Reconciliation 2026-04-28**: PARTIALLY SUPERSEDED. This 36-week roadmap predates the Tier 1 design work and the 7+ ADRs. Per-task headers carry their own status banners. Slice A's W1+W2 substrate is shipped (monorepo, schema, RLS, ALE, audit log hash chain, auth, tRPC API, Next.js shell). For the canonical "what we built" view see [VERTICAL-SLICE-PLAN.md](../../VERTICAL-SLICE-PLAN.md) and [CLAUDE.md §5](../../CLAUDE.md).
+
 > **Goal**: Set up the project, database, auth, and base UI shell.
 > Everything built here is standard-agnostic — it's the platform foundation.
 

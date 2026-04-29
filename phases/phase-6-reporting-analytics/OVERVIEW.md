@@ -1,5 +1,7 @@
 # Phase 6 — Reporting & Analytics
 
+> **⚠ Reconciliation 2026-04-28**: PARTIALLY EXERCISED. Slice A W4 (next) ships the minimum report path — `report.create / submitForSignoff / sign`, NestJS worker for PDF render, presigned-URL download, and the audit log viewer. Dashboards, materialized views, and richer analytics are deferred. Canonical narrative: [`product/api-catalog.md`](../../product/api-catalog.md) and the report-related entries under [`product/features/`](../../product/features/) and [`product/ux/`](../../product/ux/).
+
 > **Goal**: Powerful reporting engine, dashboards, and data analytics.
 > Reports are the primary output of audit work — they must be excellent.
 

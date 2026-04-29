@@ -1,5 +1,7 @@
 # Phase 7 — Enterprise & SaaS
 
+> **⚠ Reconciliation 2026-04-28**: DEFERRED entirely from Slice A — explicit deferrals per slice plan §1.3 include SSO, billing, multi-tenant admin, mobile, and most production-readiness work (Slice A is dev-laptop scope, NOT real AWS). The ADR-tier decisions ([0006 regional silos](../../references/adr/0006-regional-silos.md), [0007 API versioning](../../references/adr/0007-hybrid-api-versioning.md)) and [`devops/`](../../devops/) + [`security/`](../../security/) folders are canonical for the architectural decisions referenced here.
+
 > **Goal**: Production-ready SaaS platform — multi-tenant admin, billing,
 > SSO, compliance, CI/CD, monitoring, documentation, and mobile.
 

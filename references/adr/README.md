@@ -36,6 +36,8 @@ The narrative decision log in [`docs/06-design-decisions.md`](../../docs/06-desi
 | [0005](0005-session-revocation-hybrid.md) | Session revocation — short-TTL JWT + targeted Redis blocklist | Accepted | 2026-04-20 | #auth #security #compliance |
 | [0006](0006-regional-deployment-silos.md) | Regional deployment silos for data residency | Accepted | 2026-04-20 | #infrastructure #compliance #multi-tenancy #data-residency |
 | [0007](0007-api-versioning-hybrid.md) | API versioning — URL-based majors + dated header minors, tRPC unversioned | Accepted | 2026-04-20 | #api #versioning #integrations |
+| [0008](0008-control-matrix-as-separate-model.md) | Control Matrix (PRCM) as a separate model upstream of Audit Tests | Proposed | 2026-04-28 | #database #data-model #internal-audit #sox #fieldwork |
+| [0009](0009-risk-assessment-history-table.md) | Risk Assessment as a per-fiscal-year history table | Proposed | 2026-04-28 | #database #data-model #risk #internal-audit #planning |
 
 ## Numbering convention
 

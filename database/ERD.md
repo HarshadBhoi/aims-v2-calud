@@ -47,6 +47,8 @@ Three logical schemas:
 │   │          │  │                 │     ├── workpaper_versions       │
 │   │          │  │                 │     │     └── files              │
 │   │          │  │                 │     └── workpaper_links (poly)   │
+│   │          │  │                 ├── control_matrix (PRCM)          │
+│   │          │  │                 │     └── audit_tests (FK)         │
 │   │          │  │                 ├── audit_tests                    │
 │   │          │  │                 ├── sampling_worksheets            │
 │   │          │  │                 ├── reports                        │
@@ -57,6 +59,7 @@ Three logical schemas:
 │   │          │  │                 └── time_entries                   │
 │   │          │  │                                                   │
 │   │          │  ├── audit_universe_entities (hierarchical)           │
+│   │          │  │     └── risk_assessments (per fiscal year)         │
 │   │          │  ├── annual_audit_plans                               │
 │   │          │  ├── peer_reviews                                     │
 │   │          │  ├── certifications                                   │
@@ -259,6 +262,9 @@ Example queries:
 | User → CPE Records | 1:N | |
 | Approval → Entity | N:1 (polymorphic) | |
 | Finding → Prior Finding | N:1 (self-ref) | For repeat findings |
+| Engagement → Control Matrix (PRCM) | 1:N | Each engagement may document many process-risk-control rows; see [ADR-0008](../references/adr/0008-control-matrix-as-separate-model.md) |
+| Control Matrix → Audit Tests | 1:N | A control may be exercised by multiple tests (e.g., SOX TOD + TOE) |
+| Audit Universe Entity → Risk Assessments | 1:N | One row per fiscal year; preserves YoY trend; see [ADR-0009](../references/adr/0009-risk-assessment-history-table.md) |
 
 ---
 
@@ -275,6 +281,8 @@ For capacity planning. Conservative estimates per tenant per year for a mid-size
 | `workpapers` | 10,000-100,000 | Often 20+ per engagement |
 | `workpaper_versions` | 15,000-150,000 | 1.5x workpapers |
 | `audit_tests` | 2,000-50,000 | SOX-heavy tenants generate thousands |
+| `control_matrix` | 500-20,000 | Multi-test engagements grow this; SOX 404 tenants the heaviest |
+| `risk_assessments` | 100-5,000 | One row per (auditable entity, fiscal year); ~equal to active universe entities annually |
 | `time_entries` | 100,000-500,000 | Daily entries per auditor |
 | `notifications` | 50,000-500,000 | Multiple per auditor per day |
 | `audit_log` | 1,000,000-10,000,000 | Every CRUD + auth event |

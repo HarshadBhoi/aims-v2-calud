@@ -8,7 +8,7 @@ Onboarding doc for any Claude Code session (or new engineer) opening this repo. 
 
 **AIMS v2** — a multi-standard, enterprise SaaS audit information management platform. Greenfield spec work extending AIMS v1 (a GAGAS-only SharePoint SPFx app, lives in a separate repo at `aaryapaar.sharepoint.com/sites/smb`) into an independent, multi-tenant, multi-standard SaaS.
 
-**What's in the repo today (2026-04-22)**: a complete 48-file product and architecture specification (~39,000 lines) plus implementation-ready design artifacts. **No application code yet.** Tier 2 (first vertical slice) is the active work item — see §5.
+**What's in the repo today (2026-04-28)**: the 48-file spec tier plus a working Slice A monorepo through end of Week 4 — substrate, auth, tRPC API, Next.js shell, full finding-and-report loop with MFA-gated approval, NestJS worker rendering signed PDFs to S3, presigned download, audit log viewer + chain verification, and end-to-end OTel trace propagation. Week 5-6 (buffer / polish / soak) is the remaining slice scope.
 
 ---
 
@@ -17,7 +17,10 @@ Onboarding doc for any Claude Code session (or new engineer) opening this repo. 
 - ✅ **Tier 1 — Foundations**: 10 design tracks complete (product, API, auth, database, devops, engineering, frontend, security, data-model, docs)
 - ✅ **Phase 1-6 product specification**: all closed with external Gemini R1 reviews. 48 files, ~39,000 lines.
 - ✅ **5-phase analytical audit by Gemini**: all PASSED (see `audits/`). "The repository is fully validated and ready for Tier 2: Technical Construction."
-- ⏳ **Tier 2 — Vertical Slice A**: plan drafted (`VERTICAL-SLICE-PLAN.md`), decision points §10 pending user confirmation, implementation not started.
+- 🚧 **Tier 2 — Vertical Slice A** (active): full vertical slice shipped through end of Week 4 — engagement → finding → submit → MFA-gated approve → report → sign → outbox → worker → PDF → S3 → presigned download, plus the audit-log viewer and end-to-end OTel propagation. **97 integration tests passing** (77 api, 20 worker).
+  - W1 substrate ✅, W2 auth + API skeleton ✅, W3 finding loop ✅, W4 reports + PDF + OTel ✅
+  - W5-6 next: buffer / polish / soak — performance, integration sweeps, optional session-revocation E2E, spec-delta closeout
+  - Spec drift accumulated in [`SPEC-DELTA-LOG.md`](SPEC-DELTA-LOG.md)
 
 ---
 
@@ -97,13 +100,18 @@ aims-v2-platform/
 
 **Target**: prove the substrate works by shipping one end-to-end user journey (Engagement → Finding → PDF signoff) with every load-bearing ADR exercised.
 
-**Read first**: [`VERTICAL-SLICE-PLAN.md`](VERTICAL-SLICE-PLAN.md) — ~700 lines, §1 defines the journey, §3 lists the minimum spec subset, §4 is the week-by-week build plan.
+**Read first**: [`VERTICAL-SLICE-PLAN.md`](VERTICAL-SLICE-PLAN.md) — ~700 lines, §1 defines the journey, §3 lists the minimum spec subset, §4 is the week-by-week build plan. Drift between spec and reality is captured in [`SPEC-DELTA-LOG.md`](SPEC-DELTA-LOG.md).
 
 **Scope**: solo engineer, 4-6 weeks, Docker compose on dev laptop (NOT real AWS).
 
-**Explicit deferrals** (§1.3 of slice plan): PBC, CAP, PRCM, APM, QA, multi-standard, auditee portal, SSO, billing, fieldwork, real-time collab. All future slices.
+**Progress** (as of 2026-04-28):
+- ✅ **W1 substrate** — monorepo, docker compose, Prisma schema, tenant extension, RLS, ALE, audit-log hash chain, seeds
+- ✅ **W2 auth + API** — Better-Auth-style password + TOTP + EdDSA JWT + Redis blocklist; Fastify + tRPC; engagement + pack procedures; Next.js shell with sign-in
+- ✅ **W3 finding loop** — finding CRUD with ALE-encrypted elements, autosave editor, four-element progress bar, submit-for-review, MFA-gated decide flow with auto-replay step-up; review queue UI
+- ✅ **W4 reports + PDF + OTel** — report compose/sign with typed attestation, transactional outbox, NestJS worker, pdfkit render, S3 archive, presigned download, audit-log viewer + verify-chain, end-to-end W3C trace propagation across the SQS boundary
+- 🚧 **W5-6 polish/buffer** — performance tuning, integration sweeps, optional session-revocation E2E (slice plan recommendation), spec-delta closeout
 
-**Decision points waiting on user confirmation** (§10 of slice plan): environment, scope, timeline, who builds, repo strategy, post-slice sequencing.
+**Explicit deferrals** (§1.3 of slice plan): PBC, CAP, PRCM, APM, QA, multi-standard, auditee portal, SSO, billing, fieldwork, real-time collab. All future slices.
 
 ---
 
@@ -147,7 +155,7 @@ aims-v2-platform/
 
 ## 9. Onboarding paths by role
 
-### Fresh Claude session picking up where 2026-04-22 left off
+### Fresh Claude session picking up where 2026-04-28 left off
 1. Read this file (you are)
 2. Read [`VERTICAL-SLICE-PLAN.md`](VERTICAL-SLICE-PLAN.md) — the active work item
 3. Scan [`audits/`](audits/) — validates the spec tier is grounded
@@ -179,4 +187,4 @@ This repo was extracted from a larger working folder (`/Users/harshadbhaibhoi/Do
 
 ---
 
-*Last updated: 2026-04-22. Maintain this file as project state changes — especially §5 (active work), §7 (anti-patterns learned), and §10 (memory status after any re-location).*
+*Last updated: 2026-04-28. Maintain this file as project state changes — especially §2 (status), §5 (active work), §7 (anti-patterns learned), and §10 (memory status after any re-location).*

@@ -487,6 +487,7 @@ model Engagement {
   // Auditee context
   auditeeName       String?
   auditeeContact    Json?              // Structured contact info
+  regulatoryFramework String?
 
   // Bitemporal — valid time (what period the engagement covers)
   periodStartDate   DateTime?          @db.Date
@@ -498,11 +499,14 @@ model Engagement {
   actualStartDate   DateTime?          @db.Date
   actualEndDate     DateTime?          @db.Date
   reportIssuedDate  DateTime?          @db.Date
+  entranceConferenceDate DateTime?     @db.Date
+  exitConferenceDate     DateTime?     @db.Date
 
   // Risk
   inherentRiskRating String?
   residualRiskRating String?
   riskFactors       Json?
+  materiality       Decimal?           @db.Decimal(15, 2)
 
   // Budget
   budgetedHours     Decimal?           @db.Decimal(10, 2)
@@ -533,6 +537,7 @@ model Engagement {
   workpapers        Workpaper[]
   auditTests        AuditTest[]
   samplingWorksheets SamplingWorksheet[]
+  controlMatrix     ControlMatrix[]
   reports           Report[]
   timeEntries       TimeEntry[]
   checklists        ChecklistInstance[]
@@ -788,6 +793,11 @@ model Finding {
   // Status
   status            FindingStatus @default(DRAFT)
 
+  // Closure (separate from `lockedAt` — closure is the audit conclusion;
+  // lock is the cryptographic immutability marker)
+  closureDate       DateTime?  @db.Date
+  closureBasis      String?    @db.Text
+
   // Questioned Costs (Single Audit overlay)
   questionedCostsKnown   Decimal?    @db.Decimal(15, 2)
   questionedCostsLikely  Decimal?    @db.Decimal(15, 2)
@@ -964,6 +974,7 @@ model Workpaper {
   title             String
   description       String?    @db.Text
   category          String?    // 'Planning', 'Fieldwork', 'Evidence', 'Correspondence', 'Reports'
+  confidentialityLevel String?  // 'INTERNAL', 'RESTRICTED', 'CONFIDENTIAL'
 
   status            WorkpaperStatus @default(DRAFT)
 
@@ -1059,6 +1070,69 @@ model WorkpaperLink {
 }
 
 // ============================================================================
+// CONTROL MATRIX (PRCM) — Process / Risk / Control documentation
+// ============================================================================
+
+/// Process-Risk-Control matrix. Documents the control universe for an
+/// engagement before testing. Each row maps one process risk to a control;
+/// AuditTest rows then exercise these controls.
+model ControlMatrix {
+  id                  String     @id @default(cuid())
+  tenantId            String
+  engagementId        String
+  engagement          Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  // Process
+  processName         String
+  processDescription  String?    @db.Text
+
+  // Risk
+  riskCode            String     // Engagement-scoped (e.g., "R-001")
+  riskDescription     String     @db.Text
+  riskRating          String     // 'HIGH', 'MEDIUM', 'LOW'
+  likelihood          String?    // 'HIGH', 'MEDIUM', 'LOW'
+  impact              String?    // 'HIGH', 'MEDIUM', 'LOW'
+
+  // Control
+  controlCode         String?    // Engagement-scoped (e.g., "C-001")
+  controlDescription  String?    @db.Text
+  controlType         String?    // 'PREVENTIVE', 'DETECTIVE', 'CORRECTIVE', 'DIRECTIVE'
+  controlNature       String?    // 'MANUAL', 'AUTOMATED', 'IT_DEPENDENT_MANUAL'
+  controlFrequency    String?    // 'CONTINUOUS', 'DAILY', 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'ANNUALLY', 'AD_HOC'
+  controlOwnerId      String?    // userId
+  controlEffectiveness String?   // 'EFFECTIVE', 'PARTIALLY_EFFECTIVE', 'INEFFECTIVE', 'NOT_TESTED'
+
+  residualRiskRating  String?
+
+  // Standard-specific
+  assertionsCovered   String[]   // Financial: 'existence', 'completeness', etc.
+  packReference       String?    // e.g., "GAGAS §6.39", "COSO 2013 PC3"
+  customAttributes    Json       @default("{}")
+
+  status              String     @default("DRAFT")  // 'DRAFT', 'ACTIVE', 'TESTED', 'CLOSED'
+
+  // Provenance
+  preparedById        String
+  reviewedById        String?
+  reviewedAt          DateTime?  @db.Timestamptz(6)
+
+  // Tests exercising this control
+  tests               AuditTest[]
+
+  createdAt           DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt           DateTime?  @db.Timestamptz(6)
+  version_            Int        @default(1) @map("_version")
+
+  @@unique([engagementId, riskCode])
+  @@index([tenantId, engagementId])
+  @@index([tenantId, riskRating])
+  @@index([tenantId, controlEffectiveness])
+  @@map("control_matrix")
+  @@schema("public")
+}
+
+// ============================================================================
 // AUDIT TESTS (SOX, ISO controls testing)
 // ============================================================================
 
@@ -1072,7 +1146,12 @@ model AuditTest {
   title             String
   objective         String     @db.Text
 
-  // SOX-specific
+  // Control matrix link (PRCM row this test exercises). Optional —
+  // some packs (financial substantive testing) skip the matrix.
+  controlMatrixId   String?
+  controlMatrix     ControlMatrix? @relation(fields: [controlMatrixId], references: [id])
+
+  // SOX-specific (denormalized control reference if no matrix row, or supplementary detail)
   controlId         String?    // External control library reference
   controlDescription String?   @db.Text
   assertionTested   String?    // 'existence', 'completeness', etc.
@@ -1100,6 +1179,7 @@ model AuditTest {
   version_          Int        @default(1) @map("_version")
 
   @@index([tenantId, engagementId])
+  @@index([controlMatrixId])
   @@map("audit_tests")
   @@schema("public")
 }
@@ -1182,6 +1262,15 @@ model Report {
 
   // Content (sections as JSONB keyed by pack reportDefinitions section codes)
   content           Json       @default("{}")
+
+  // Reporting period (may differ from engagement period — e.g., audit FY24 issued in FY25)
+  auditPeriodStart  DateTime?  @db.Date
+  auditPeriodEnd    DateTime?  @db.Date
+
+  // Compliance attestations (machine-checkable flags on the report itself,
+  // independent of e-signature; required by GAGAS report standards)
+  gagasComplianceStatement Boolean @default(false)
+  independenceStatement    Boolean @default(false)
 
   // Versioning
   reportVersion     Int        @default(1)
@@ -1389,6 +1478,9 @@ model CPERecord {
   provider          String?
 
   hours             Decimal    @db.Decimal(5, 2)
+  // Subset of `hours` qualifying as government auditing per GAGAS §4.16
+  // (24 of every 80 hours must be government-related)
+  governmentRelatedHours Decimal? @db.Decimal(5, 2)
   topic             String?    // For GAGAS: government auditing topic tracking
   topicCategory     String?    // Canonical category for topic requirements
 
@@ -1469,6 +1561,7 @@ model AuditUniverseEntity {
   auditCycleMonths  Int?
 
   engagements       Engagement[]
+  riskAssessments   RiskAssessment[]
 
   createdAt         DateTime   @default(now()) @db.Timestamptz(6)
   updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
@@ -1509,6 +1602,46 @@ model AnnualAuditPlan {
   @@unique([tenantId, fiscalYear])
   @@index([tenantId, status])
   @@map("annual_audit_plans")
+  @@schema("public")
+}
+
+/// Per-fiscal-year risk assessment for an audit universe entity.
+/// Preserves history (year-over-year trending) which a JSONB blob on the
+/// universe entity cannot. Dimensions are stored as JSONB to support
+/// pack-specific dimension sets (GAGAS 5-dim, IIA, COSO ERM, ISO 31000).
+model RiskAssessment {
+  id                String     @id @default(cuid())
+  tenantId          String
+  universeEntityId  String
+  universeEntity    AuditUniverseEntity @relation(fields: [universeEntityId], references: [id], onDelete: Cascade)
+
+  fiscalYear        Int
+
+  // Pack-defined dimensions, e.g.,
+  // { "STRATEGIC": 4, "OPERATIONAL": 3, "COMPLIANCE": 5, "FINANCIAL": 2, "REPUTATIONAL": 4 }
+  dimensions        Json
+
+  compositeScore    Decimal?   @db.Decimal(5, 2)
+  riskRating        String?    // 'HIGH', 'MEDIUM', 'LOW'
+
+  methodology       String?    // Pack reference or free text
+  notes             String?    @db.Text
+
+  // Provenance
+  assessedById      String
+  assessmentDate    DateTime   @db.Date
+  approvedById      String?
+  approvedAt        DateTime?  @db.Timestamptz(6)
+
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+  version_          Int        @default(1) @map("_version")
+
+  @@unique([universeEntityId, fiscalYear])
+  @@index([tenantId, fiscalYear])
+  @@index([tenantId, riskRating])
+  @@map("risk_assessments")
   @@schema("public")
 }
 
@@ -1586,6 +1719,7 @@ model Notification {
   user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   type              String     // 'approval_requested', 'approval_granted', 'cap_overdue', etc.
+  priority          String     @default("NORMAL")  // 'HIGH', 'NORMAL', 'LOW'
   title             String
   body              String     @db.Text
   actionUrl         String?

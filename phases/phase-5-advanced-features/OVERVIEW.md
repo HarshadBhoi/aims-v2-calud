@@ -1,5 +1,7 @@
 # Phase 5 — Advanced Features
 
+> **⚠ Reconciliation 2026-04-28**: DEFERRED entirely from Slice A. The hash-chained audit log substrate and ALE primitives needed for e-signatures and tamper-evident trails are shipped, but the rich collaboration, notification, and tracking surfaces are out of slice scope. Resumes when later slices pick up these concerns. Tier 1 design (in [`product/`](../../product/), [`security/`](../../security/), [`auth/`](../../auth/)) is canonical for any architectural decisions referenced here.
+
 > **Goal**: Enterprise features that differentiate the platform — collaboration,
 > notifications, audit trails, e-signatures, and advanced tracking.
 

@@ -1,5 +1,7 @@
 # Phase 2 — Core Audit Engine
 
+> **⚠ Reconciliation 2026-04-28**: PARTIALLY SUPERSEDED. Engagement CRUD, finding CRUD with ALE-encrypted four-element blob, and the finding approval workflow are shipped in Slice A W2-W3. Planning, fieldwork, and workpapers are deferred to later slices. Per-task headers carry their own status banners. See [VERTICAL-SLICE-PLAN.md §5](../../VERTICAL-SLICE-PLAN.md).
+
 > **Goal**: Build the standard-agnostic audit engine — the heart of the platform.
 > This engine handles engagements, findings, evidence, and workflows WITHOUT knowing which audit standard is in use.
 

@@ -88,6 +88,8 @@ ALTER TABLE public.cpe_records        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.time_entries       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_universe_entities ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.annual_audit_plans ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.risk_assessments   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.control_matrix     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.approvals          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notifications      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.files              ENABLE ROW LEVEL SECURITY;
@@ -130,6 +132,8 @@ ALTER TABLE public.cpe_records        FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.time_entries       FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_universe_entities FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.annual_audit_plans FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.risk_assessments   FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.control_matrix     FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.approvals          FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.notifications      FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.files              FORCE ROW LEVEL SECURITY;
@@ -287,6 +291,26 @@ CREATE POLICY tenant_isolation_audit_universe ON public.audit_universe_entities
 
 -- Annual Audit Plans
 CREATE POLICY tenant_isolation_annual_plans ON public.annual_audit_plans
+  USING (
+    fn_is_superadmin()
+    OR tenant_id = fn_current_tenant_id()
+  )
+  WITH CHECK (
+    tenant_id = fn_current_tenant_id()
+  );
+
+-- Risk Assessments (per ADR-0009 — per-FY history table)
+CREATE POLICY tenant_isolation_risk_assessments ON public.risk_assessments
+  USING (
+    fn_is_superadmin()
+    OR tenant_id = fn_current_tenant_id()
+  )
+  WITH CHECK (
+    tenant_id = fn_current_tenant_id()
+  );
+
+-- Control Matrix / PRCM (per ADR-0008 — separate model upstream of audit_tests)
+CREATE POLICY tenant_isolation_control_matrix ON public.control_matrix
   USING (
     fn_is_superadmin()
     OR tenant_id = fn_current_tenant_id()

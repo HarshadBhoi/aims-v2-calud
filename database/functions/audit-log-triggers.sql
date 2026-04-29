@@ -322,6 +322,20 @@ CREATE TRIGGER trg_audit_files
   FOR EACH ROW
   EXECUTE FUNCTION audit.fn_log_change('file');
 
+-- Control Matrix / PRCM (planning-phase artifact, audit trail required for
+-- effectiveness rating changes; ADR-0008)
+CREATE TRIGGER trg_audit_control_matrix
+  AFTER INSERT OR UPDATE OR DELETE ON public.control_matrix
+  FOR EACH ROW
+  EXECUTE FUNCTION audit.fn_log_change('control_matrix');
+
+-- Risk Assessments (per-FY history; assessment + approval changes recorded;
+-- ADR-0009)
+CREATE TRIGGER trg_audit_risk_assessments
+  AFTER INSERT OR UPDATE OR DELETE ON public.risk_assessments
+  FOR EACH ROW
+  EXECUTE FUNCTION audit.fn_log_change('risk_assessment');
+
 -- ============================================================================
 -- 6. PARTITIONING audit_log BY MONTH
 -- ============================================================================

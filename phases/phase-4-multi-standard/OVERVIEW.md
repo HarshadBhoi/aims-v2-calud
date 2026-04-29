@@ -1,5 +1,7 @@
 # Phase 4 — Multi-Standard Framework
 
+> **⚠ Reconciliation 2026-04-28**: DEFERRED entirely from Slice A. Canonical multi-standard design lives at [`data-model/standard-pack-schema.ts`](../../data-model/standard-pack-schema.ts), [`data-model/examples/`](../../data-model/examples/) (GAGAS, IIA GIAS, ISO 19011, SOC 2, Single Audit overlay), and [`docs/03-the-multi-standard-insight.md`](../../docs/03-the-multi-standard-insight.md). The slice resolver returns single-pack effective values; multi-pack union with strictness direction (max/min/union/override_required) and `equivalenceStrength` annotation overlays land in Slice B+.
+
 > **Goal**: Add IIA GIAS 2024 and SOX/PCAOB standard packs, build the crosswalk engine,
 > and prove that the abstraction layer supports multiple standards simultaneously.
 
