@@ -12,7 +12,13 @@
  *   6. Listen
  *
  * SIGINT / SIGTERM flush pending work and dispose services before exit.
+ *
+ * The OTel bootstrap MUST stay at the top — it patches Node's module
+ * resolver before Fastify / Prisma / AWS-SDK are loaded, which is how the
+ * auto-instrumentations attach.
  */
+
+import "./otel";
 
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";

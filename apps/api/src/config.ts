@@ -21,6 +21,8 @@ export type Config = {
   readonly awsRegion: string;
   readonly awsEndpointUrl: string | undefined;
   readonly kmsMasterKeyAlias: string;
+  readonly reportsBucket: string;
+  readonly reportDownloadUrlTtlSeconds: number;
 
   readonly refreshCookieName: string;
   readonly accessCookieName: string;
@@ -64,6 +66,11 @@ export function loadConfig(): Config {
     awsRegion: process.env["AWS_REGION"] ?? "us-east-1",
     awsEndpointUrl: optional("AWS_ENDPOINT_URL"),
     kmsMasterKeyAlias: process.env["AWS_KMS_MASTER_KEY_ALIAS"] ?? "alias/aims-dev-master",
+    reportsBucket: process.env["AIMS_REPORTS_BUCKET"] ?? "aims-dev-reports",
+    reportDownloadUrlTtlSeconds: Number.parseInt(
+      process.env["AIMS_REPORT_DOWNLOAD_TTL_SECONDS"] ?? "300",
+      10,
+    ),
 
     refreshCookieName: process.env["AUTH_REFRESH_COOKIE"] ?? "aims_refresh",
     accessCookieName: process.env["AUTH_ACCESS_COOKIE"] ?? "aims_access",

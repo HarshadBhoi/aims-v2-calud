@@ -29,10 +29,10 @@ export type ResolvePackInput = z.infer<typeof ResolvePackInput>;
  * with strictness-direction (max/min/union/override_required).
  */
 export type ResolvedRequirements = {
-  readonly findingElements: ReadonlyArray<FindingElementRequirement>;
-  readonly findingClassifications: ReadonlyArray<FindingClassificationRequirement>;
+  readonly findingElements: readonly FindingElementRequirement[];
+  readonly findingClassifications: readonly FindingClassificationRequirement[];
   readonly documentationRequirements: DocumentationRequirements;
-  readonly sources: ReadonlyArray<PackReference>;
+  readonly sources: readonly PackReference[];
 };
 
 export type FindingElementRequirement = {

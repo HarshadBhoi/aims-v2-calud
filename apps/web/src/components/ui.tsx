@@ -4,7 +4,12 @@
  * for `shadcn@latest add button` etc.
  */
 
-import { type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react";
+import {
+  type ButtonHTMLAttributes,
+  type InputHTMLAttributes,
+  type ReactNode,
+  type TextareaHTMLAttributes,
+} from "react";
 
 function cn(...classes: (string | false | null | undefined)[]): string {
   return classes.filter(Boolean).join(" ");
@@ -42,6 +47,25 @@ export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElem
       className={cn(
         "block w-full rounded-md border border-black/10 bg-white px-3 py-2 text-sm shadow-sm transition",
         "placeholder:text-black/40 focus:border-[var(--color-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]/30",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+// ─── Textarea ──────────────────────────────────────────────────────────────
+
+export function Textarea({
+  className,
+  ...props
+}: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return (
+    <textarea
+      className={cn(
+        "block w-full rounded-md border border-black/10 bg-white px-3 py-2 text-sm shadow-sm transition",
+        "placeholder:text-black/40 focus:border-[var(--color-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]/30",
+        "min-h-32 resize-y font-sans leading-relaxed",
         className,
       )}
       {...props}

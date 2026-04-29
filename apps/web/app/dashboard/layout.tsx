@@ -49,6 +49,12 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
               <Link href="/dashboard/engagements" className="hover:underline">
                 Engagements
               </Link>
+              <Link href="/dashboard/approvals" className="hover:underline">
+                Approvals
+              </Link>
+              <Link href="/dashboard/audit-log" className="hover:underline">
+                Audit log
+              </Link>
             </nav>
           </div>
           <div className="flex items-center gap-3 text-sm">

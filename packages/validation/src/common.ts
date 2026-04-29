@@ -19,6 +19,6 @@ export type PaginationInput = z.infer<typeof PaginationInput>;
 
 /** Shape returned by every list endpoint. */
 export type PaginatedResult<T> = {
-  readonly items: ReadonlyArray<T>;
+  readonly items: readonly T[];
   readonly nextCursor: string | null;
 };

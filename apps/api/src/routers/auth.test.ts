@@ -18,6 +18,7 @@ import {
   type AdminPrismaClient,
 } from "@aims/prisma-client";
 import { CreateKeyCommand, KMSClient } from "@aws-sdk/client-kms";
+import { S3Client } from "@aws-sdk/client-s3";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { generateKeyPair } from "jose";
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers";
@@ -40,6 +41,7 @@ let pg: StartedPostgreSqlContainer | undefined;
 let ls: StartedTestContainer | undefined;
 let prisma: AdminPrismaClient | undefined;
 let kmsClient: KMSClient | undefined;
+let s3Client: S3Client | undefined;
 let services: Services | undefined;
 let sessionModule: SessionModule | undefined;
 let tenantId: string;
@@ -117,7 +119,7 @@ beforeAll(async () => {
     .start();
 
   ls = await new GenericContainer("localstack/localstack:3.8")
-    .withEnvironment({ SERVICES: "kms", AWS_DEFAULT_REGION: "us-east-1" })
+    .withEnvironment({ SERVICES: "kms,s3", AWS_DEFAULT_REGION: "us-east-1" })
     .withExposedPorts(4566)
     .withWaitStrategy(Wait.forLogMessage(/Ready\./))
     .start();
@@ -137,6 +139,12 @@ beforeAll(async () => {
     endpoint: kmsEndpoint,
     region: "us-east-1",
     credentials: { accessKeyId: "test", secretAccessKey: "test" },
+  });
+  s3Client = new S3Client({
+    endpoint: kmsEndpoint,
+    region: "us-east-1",
+    credentials: { accessKeyId: "test", secretAccessKey: "test" },
+    forcePathStyle: true,
   });
   const createKeyResult = await kmsClient.send(
     new CreateKeyCommand({ Description: "auth router test master KEK" }),
@@ -166,6 +174,8 @@ beforeAll(async () => {
     awsRegion: "us-east-1",
     awsEndpointUrl: kmsEndpoint,
     kmsMasterKeyAlias: masterKeyArn,
+    reportsBucket: "aims-test-reports",
+    reportDownloadUrlTtlSeconds: 300,
     refreshCookieName: "aims_refresh",
     accessCookieName: "aims_access",
     cookieSecure: false,
@@ -187,6 +197,7 @@ beforeAll(async () => {
     prisma,
     prismaTenant,
     kmsClient,
+    s3Client,
     encryption,
     sessions: sessionModule,
     privateKey: keys.privateKey,
@@ -217,6 +228,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (services) {
     services.kmsClient.destroy();
+    services.s3Client.destroy();
   }
   await prisma?.$disconnect();
   await pg?.stop();

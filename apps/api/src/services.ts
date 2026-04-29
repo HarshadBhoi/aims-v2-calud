@@ -15,6 +15,7 @@ import {
   type TenantPrismaClient,
 } from "@aims/prisma-client";
 import { KMSClient } from "@aws-sdk/client-kms";
+import { S3Client } from "@aws-sdk/client-s3";
 import { type KeyLike } from "jose";
 
 import { loadOrGenerateDevKeys } from "./auth/dev-keys";
@@ -29,6 +30,7 @@ export type Services = {
    *  AsyncLocalStorage tenant context. Use inside authenticated procedures. */
   readonly prismaTenant: TenantPrismaClient;
   readonly kmsClient: KMSClient;
+  readonly s3Client: S3Client;
   readonly encryption: EncryptionModule;
   readonly sessions: SessionModule;
   readonly publicKey: KeyLike;
@@ -43,6 +45,13 @@ export async function createServices(config: Config): Promise<Services> {
     region: config.awsRegion,
     ...(config.awsEndpointUrl ? { endpoint: config.awsEndpointUrl } : {}),
     credentials: { accessKeyId: "test", secretAccessKey: "test" },
+  });
+
+  const s3Client = new S3Client({
+    region: config.awsRegion,
+    ...(config.awsEndpointUrl ? { endpoint: config.awsEndpointUrl } : {}),
+    credentials: { accessKeyId: "test", secretAccessKey: "test" },
+    forcePathStyle: true,
   });
 
   const encryption = createEncryptionModule({
@@ -67,6 +76,7 @@ export async function createServices(config: Config): Promise<Services> {
     prisma,
     prismaTenant,
     kmsClient,
+    s3Client,
     encryption,
     sessions,
     publicKey: keys.publicKey,
@@ -76,5 +86,6 @@ export async function createServices(config: Config): Promise<Services> {
 
 export async function disposeServices(services: Services): Promise<void> {
   services.kmsClient.destroy();
+  services.s3Client.destroy();
   await Promise.all([services.prisma.$disconnect(), services.prismaTenant.$disconnect()]);
 }

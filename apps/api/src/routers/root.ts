@@ -7,14 +7,20 @@
 
 import { router } from "../trpc";
 
+import { auditLogRouter } from "./audit-log";
 import { authRouter } from "./auth";
 import { engagementRouter } from "./engagement";
+import { findingRouter } from "./finding";
 import { packRouter } from "./pack";
+import { reportRouter } from "./report";
 
 export const appRouter = router({
+  auditLog: auditLogRouter,
   auth: authRouter,
   engagement: engagementRouter,
+  finding: findingRouter,
   pack: packRouter,
+  report: reportRouter,
 });
 
 export type AppRouter = typeof appRouter;

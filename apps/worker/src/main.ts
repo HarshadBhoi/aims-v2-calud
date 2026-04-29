@@ -2,17 +2,21 @@
  * AIMS v2 — NestJS worker tier bootstrap.
  *
  * Per ADR-0003, NestJS is scoped to workers: SQS consumers, PDF render,
- * audit-log hash chain append, scheduled jobs. It is NOT on the hot path
- * — that's apps/api (Fastify).
+ * audit-log hash chain append, scheduled jobs. NOT on the hot path —
+ * that's apps/api (Fastify).
  *
- * SLICE A SCAFFOLD: Minimal bootstrap. Real consumers arrive in:
- *   - Task 4.4: outbox poll → SQS send (report.published event)
- *   - Task 4.5: SQS consume → PDF render via Puppeteer → audit-log append
- *               → S3 archive
+ * Slice A wiring (task 4.4): OutboxModule scheduled-drain into SQS, plus
+ * ConsumerModule long-polling SQS for inbound events. Task 4.5 fills in
+ * the actual PDF render in `ReportPublishedHandler`.
  *
- * See VERTICAL-SLICE-PLAN.md §4 Week 4 and ADR-0004 for queue conventions.
+ * The OTel bootstrap MUST stay at the top — it patches the module loader
+ * before NestJS / Prisma / AWS-SDK / pg modules resolve, which is how
+ * auto-instrumentations attach (task 4.8).
  */
 
+import "./otel";
+
+import { Logger } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 
 import { AppModule } from "./app.module";
@@ -22,12 +26,24 @@ async function bootstrap(): Promise<void> {
     logger: ["log", "warn", "error"],
   });
 
-  const logger = app.get(AppModule).constructor.name;
-  console.warn(`[${logger}] AIMS worker started (scaffold — no consumers yet)`);
+  app.enableShutdownHooks();
+  const logger = new Logger("Worker");
+  logger.log("AIMS worker started — outbox drain + SQS consumer active");
 
-  // Keep the process alive. Real implementations attach SQS pollers here.
-  await new Promise(() => {
-    // intentional never-resolves
+  await new Promise<void>((resolve) => {
+    const stop = (signal: string) => () => {
+      logger.log(`received ${signal}, shutting down…`);
+      void app
+        .close()
+        .catch((err: unknown) => {
+          logger.error("clean shutdown failed", err);
+        })
+        .finally(() => {
+          resolve();
+        });
+    };
+    process.once("SIGINT", stop("SIGINT"));
+    process.once("SIGTERM", stop("SIGTERM"));
   });
 }
 
