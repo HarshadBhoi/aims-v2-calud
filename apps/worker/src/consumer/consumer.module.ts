@@ -8,12 +8,13 @@
 import { Module } from "@nestjs/common";
 
 import { AwsModule } from "../aws/aws.module";
+import { DbModule } from "../db/db.module";
 
 import { EventConsumer } from "./event.consumer";
 import { ReportPublishedHandler } from "./report-published.handler";
 
 @Module({
-  imports: [AwsModule],
+  imports: [AwsModule, DbModule],
   providers: [EventConsumer, ReportPublishedHandler],
   exports: [EventConsumer, ReportPublishedHandler],
 })

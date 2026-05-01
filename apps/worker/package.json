@@ -3,9 +3,8 @@
   "version": "0.0.1",
   "private": true,
   "description": "NestJS worker tier (ADR-0003): SQS consumers, PDF rendering, audit-log chain append, scheduled jobs.",
-  "type": "module",
   "scripts": {
-    "dev": "nest start --watch",
+    "dev": "tsx watch src/main.ts",
     "build": "nest build",
     "start": "node dist/main.js",
     "typecheck": "tsc --noEmit",
@@ -39,6 +38,7 @@
   "devDependencies": {
     "@nestjs/cli": "^10.4.5",
     "@nestjs/schematics": "^10.2.0",
+    "tsx": "^4.19.0",
     "@opentelemetry/context-async-hooks": "^1.30.0",
     "@opentelemetry/core": "^1.30.0",
     "@testcontainers/postgresql": "^10.13.2",

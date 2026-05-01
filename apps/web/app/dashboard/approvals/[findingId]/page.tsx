@@ -190,38 +190,42 @@ export default function ReviewDetailPage() {
             code from your authenticator app — your decision will replay
             automatically.
           </p>
-          <div className="flex gap-2">
-            <Input
-              inputMode="numeric"
-              pattern="\d{6}"
-              maxLength={6}
-              value={totp}
-              onChange={(e) => {
-                setTotp(e.target.value.replace(/\D/g, ""));
-              }}
-              placeholder="123456"
-              className="w-32"
-            />
-            <Button
-              type="button"
-              onClick={() => {
-                void runStepUp();
-              }}
-              disabled={mfaChallenge.isPending}
-            >
-              {mfaChallenge.isPending ? "Verifying…" : "Verify"}
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => {
-                setStepUpOpen(false);
-                setTotp("");
-                setStepUpError(null);
-              }}
-            >
-              Cancel
-            </Button>
+          <div className="space-y-2">
+            <Label htmlFor="totp">6-digit TOTP code</Label>
+            <div className="flex gap-2">
+              <Input
+                id="totp"
+                inputMode="numeric"
+                pattern="\d{6}"
+                maxLength={6}
+                value={totp}
+                onChange={(e) => {
+                  setTotp(e.target.value.replace(/\D/g, ""));
+                }}
+                placeholder="123456"
+                className="w-32"
+              />
+              <Button
+                type="button"
+                onClick={() => {
+                  void runStepUp();
+                }}
+                disabled={mfaChallenge.isPending}
+              >
+                {mfaChallenge.isPending ? "Verifying…" : "Verify"}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => {
+                  setStepUpOpen(false);
+                  setTotp("");
+                  setStepUpError(null);
+                }}
+              >
+                Cancel
+              </Button>
+            </div>
           </div>
           {stepUpError ? <Alert tone="error">{stepUpError}</Alert> : null}
         </Card>

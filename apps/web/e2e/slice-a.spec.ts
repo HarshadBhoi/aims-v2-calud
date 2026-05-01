@@ -34,7 +34,6 @@ test.describe.configure({ mode: "serial" });
 
 test("slice A — engagement → finding → report → sign → download", async ({
   page,
-  context,
 }) => {
   // ─── 1. Sign in ─────────────────────────────────────────────────────────
   await page.goto("/sign-in");
@@ -89,7 +88,10 @@ test("slice A — engagement → finding → report → sign → download", asyn
 
   // ─── 5. Submit for review ──────────────────────────────────────────────
   await page.getByRole("button", { name: "Submit for review" }).click();
-  await expect(page.getByText("IN_REVIEW")).toBeVisible({ timeout: 10_000 });
+  // The header subtitle's last segment flips to IN_REVIEW (not "DRAFT").
+  await expect(
+    page.locator("p").filter({ hasText: /· IN_REVIEW$/ }),
+  ).toBeVisible({ timeout: 10_000 });
 
   // ─── 6. Approve via the queue with MFA step-up ─────────────────────────
   await page.getByRole("link", { name: "Approvals" }).click();
@@ -136,44 +138,74 @@ test("slice A — engagement → finding → report → sign → download", asyn
   for (const key of ["executive_summary", "recommendations", "closing"]) {
     await page.locator(`#section-${key}`).fill(`E2E narrative for ${key}.`);
   }
-  await page.getByRole("button", { name: "Save now" }).click();
-  await expect(page.getByText(/Saved at/)).toBeVisible({ timeout: 15_000 });
+  // Wait for the Submit button to become enabled — that means autosave
+  // has flushed all dirty fields (it's the user-facing signal of "saved
+  // and safe to submit"). Avoids racing the autosave interval against
+  // the "Save now" click.
+  await expect(
+    page.getByRole("button", { name: "Submit for signoff" }),
+  ).toBeEnabled({ timeout: 30_000 });
 
   // ─── 8. Submit for signoff ──────────────────────────────────────────────
   await page.getByRole("button", { name: "Submit for signoff" }).click();
   await expect(page.getByText("IN_REVIEW")).toBeVisible({ timeout: 10_000 });
 
-  // ─── 9. Sign with typed attestation + MFA step-up ──────────────────────
+  // ─── 9. Sign with typed attestation (MFA may still be fresh from the
+  //         approval above) ─────────────────────────────────────────────
+  // First click — action bar — opens the modal.
   await page.getByRole("button", { name: "Sign & publish" }).click();
-  await page.getByLabel(/Attestation phrase/i).fill(ATTESTATION);
-  await page.getByRole("button", { name: /Sign & publish|Verify & sign/ }).click();
 
-  // First click → step-up needed → TOTP field appears.
-  await page.getByLabel(/TOTP code/i).fill(currentTotp(E2E_TOTP_SECRET));
-  await page.getByRole("button", { name: /Verify & sign/ }).click();
+  // The modal's <h2>Sign & publish</h2> heading uniquely anchors the
+  // modal Card; scope further interactions to its closest .rounded-lg
+  // ancestor (the Card primitive's distinctive class) to avoid strict-
+  // mode collisions with the action-bar button.
+  const signModal = page
+    .locator(".rounded-lg")
+    .filter({ has: page.getByRole("heading", { name: "Sign & publish" }) });
+  await signModal.getByLabel(/Attestation phrase/i).fill(ATTESTATION);
+  await signModal.getByRole("button", { name: "Sign & publish" }).click();
 
-  // After replay, status becomes PUBLISHED.
-  await expect(page.getByText("PUBLISHED")).toBeVisible({ timeout: 15_000 });
+  // The session may still be MFA-fresh from the approval ~30s earlier
+  // (default freshness window is 15 min). If so, the first click signs
+  // immediately. If MFA expired, the modal expands with a TOTP field —
+  // fill it and click Verify & sign.
+  const totpField = signModal.getByLabel(/TOTP code/i);
+  if (await totpField.isVisible({ timeout: 2_000 }).catch(() => false)) {
+    await totpField.fill(currentTotp(E2E_TOTP_SECRET));
+    await signModal.getByRole("button", { name: /Verify & sign/ }).click();
+  }
+
+  // After signing, status becomes PUBLISHED.
+  await expect(
+    page.locator("p").filter({ hasText: /· PUBLISHED/ }),
+  ).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText(/Report published/i)).toBeVisible();
 
   // ─── 10. Wait for worker to render the PDF ─────────────────────────────
-  // The worker polls SQS at ~10s intervals (or whatever the consumer's
-  // long-poll wait is). Poll the page; the alert text flips from "PDF render
-  // queued" → "PDF rendered" once `pdfS3Key` is set.
-  await expect(page.getByText(/PDF rendered/i)).toBeVisible({
+  // The composer polls `report.get` every 3s while PUBLISHED-but-pending,
+  // so the alert flips from "PDF render queued" → "PDF rendered." once
+  // the worker stamps `pdfRenderedAt`. Worker latency is ~10s on the SQS
+  // long poll; 60s gives plenty of headroom.
+  await expect(page.getByText(/PDF rendered\./).first()).toBeVisible({
     timeout: 60_000,
   });
 
   // ─── 11. Download PDF (presigned URL) ──────────────────────────────────
-  // Clicking opens the presigned URL in a new tab. Capture the popup and
-  // assert the URL targets the reports bucket and carries an AWS signature.
-  const popupPromise = context.waitForEvent("page");
+  // Intercept the `report.downloadPdf` tRPC response — more robust than
+  // capturing the new-tab popup which detaches once the browser starts the
+  // PDF download. Asserts the api returned a real S3 presigned URL.
+  const downloadResponsePromise = page.waitForResponse((r) =>
+    r.url().includes("/trpc/report.downloadPdf") && r.request().method() === "GET",
+  );
   await page.getByRole("button", { name: "Download PDF" }).click();
-  const popup = await popupPromise;
-  const url = popup.url();
-  expect(url).toContain("aims-dev-reports");
-  expect(url).toMatch(/X-Amz-Signature=/);
-  await popup.close();
+  const downloadResponse = await downloadResponsePromise;
+  expect(downloadResponse.ok()).toBe(true);
+  const body = (await downloadResponse.json()) as {
+    result: { data: { json: { url: string; expiresAt: string } } };
+  }[];
+  const presignedUrl = body[0]?.result.data.json.url ?? "";
+  expect(presignedUrl).toContain("aims-dev-reports");
+  expect(presignedUrl).toMatch(/X-Amz-Signature=/);
 });
 
 /**

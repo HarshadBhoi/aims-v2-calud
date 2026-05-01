@@ -45,6 +45,10 @@ export class EventConsumer implements OnModuleInit, OnModuleDestroy {
   constructor(
     @Inject(SQS_CLIENT) private readonly sqs: SQSClient,
     @Inject(WORKER_CONFIG) private readonly config: WorkerConfig,
+    // Explicit @Inject — tsx (used by `pnpm dev`) doesn't emit
+    // emitDecoratorMetadata, so Nest can't resolve class-type params
+    // by reflection. The token form avoids needing reflect-metadata.
+    @Inject(ReportPublishedHandler)
     private readonly reportPublishedHandler: ReportPublishedHandler,
   ) {}
 
