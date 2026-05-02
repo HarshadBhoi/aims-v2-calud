@@ -200,15 +200,24 @@ describe("resolveStrictness — multi-pack (GAGAS primary + IIA secondary)", () 
     expect(out.strictness.documentationRequirements.fourElementComplete).toBe(true);
   });
 
-  it("ResolvedRequirements.findingElements comes from the primary pack (GAGAS labels)", () => {
+  it("ResolvedRequirements.findingElements unions across packs — primary order first, secondaries appended (slice plan §1.2 / W4 e2e)", () => {
     const out = resolveStrictness([gagas({ isPrimary: true }), iia()]);
 
+    // Primary's natural order (CRITERIA, CONDITION, CAUSE, EFFECT) preserved;
+    // RECOMMENDATION appended from IIA-secondary (the only contributor that
+    // declares it). Editor surface needs the union so the multi-pack
+    // completion gate (5/5 in this case) is reachable through the UI.
     expect(out.resolved.findingElements.map((e) => e.code)).toEqual([
       "CRITERIA",
       "CONDITION",
-      "CAUSE", // GAGAS uses "CAUSE", not IIA's "ROOT_CAUSE"
+      "CAUSE",
       "EFFECT",
+      "RECOMMENDATION",
     ]);
+    // Display labels: GAGAS supplies the first four; IIA's "Recommendation"
+    // label backs the 5th (primary doesn't declare RECOMMENDATION).
+    const recommendation = out.resolved.findingElements.find((e) => e.code === "RECOMMENDATION");
+    expect(recommendation?.name).toBe("Recommendation");
   });
 
   it("ResolvedRequirements.sources lists both packs in deterministic order (primary first)", () => {

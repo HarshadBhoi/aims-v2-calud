@@ -263,25 +263,55 @@ export function resolveStrictness(packs: readonly PackInput[]): StrictnessResolu
     }
   }
 
-  // ResolvedRequirements: per slice plan §3.3 + ADR-0010 — labels come from
-  // the primary pack's findingElements; storage keys are canonical codes
-  // sourced via that pack's semanticElementMappings. The editor uses
-  // requirement.code (canonical) as both the React key and the
-  // updateElement payload's elementCode, while requirement.name carries
-  // the primary's human label (e.g., "Root Cause" for IIA, "Cause" for
-  // GAGAS — both back the canonical CAUSE slot).
+  // ResolvedRequirements: per slice plan §3.3 + §1.2 — the editor surface
+  // covers the FULL union of required canonical codes across attached
+  // packs (so a multi-pack engagement renders all 5 slots when GAGAS+IIA
+  // are attached, not just GAGAS's 4). Display labels prefer the primary
+  // pack's `findingElements[i].name` when primary has the canonical code;
+  // fall back to a contributor pack's label for codes only secondaries
+  // declare (RECOMMENDATION on a GAGAS-primary engagement comes from
+  // IIA-secondary's "Recommendation" label).
+  //
+  // Storage keys are canonical (the request payload's `code` field doubles
+  // as the React key and the `updateElement.elementCode` field).
+  //
+  // Order: primary pack's natural order first (preserves the slice-A UX +
+  // satisfies the existing resolver tests' ordered-output assertion), then
+  // secondary contributors append codes the primary doesn't declare in
+  // alphabetical canonical order.
+  const findingElements: FindingElementRequirement[] = [];
+  const seenCanonicals = new Set<string>();
   const primaryPackToCanonical = new Map<string, string>();
   for (const m of primary.content.semanticElementMappings ?? []) {
     primaryPackToCanonical.set(m.packElementCode, m.semanticCode);
   }
-  const translatedFindingElements: FindingElementRequirement[] = (
-    primary.content.findingElements ?? []
-  ).map((fe) => {
+  for (const fe of primary.content.findingElements ?? []) {
     const canonical = primaryPackToCanonical.get(fe.code);
-    return canonical !== undefined ? { ...fe, code: canonical } : fe;
-  });
+    if (canonical === undefined) continue;
+    findingElements.push({ ...fe, code: canonical });
+    seenCanonicals.add(canonical);
+  }
+  // Then append codes only secondary packs contribute (e.g.,
+  // RECOMMENDATION when GAGAS is primary + IIA is secondary).
+  for (const code of requiredCanonicalCodes) {
+    if (seenCanonicals.has(code)) continue;
+    const contributor = codeContributors.get(code);
+    if (!contributor) continue;
+    const packToCanonical = new Map<string, string>();
+    for (const m of contributor.content.semanticElementMappings ?? []) {
+      packToCanonical.set(m.packElementCode, m.semanticCode);
+    }
+    const fe = (contributor.content.findingElements ?? []).find(
+      (e) => packToCanonical.get(e.code) === code,
+    );
+    if (fe) {
+      findingElements.push({ ...fe, code });
+      seenCanonicals.add(code);
+    }
+  }
+
   const resolved: ResolvedRequirements = {
-    findingElements: translatedFindingElements,
+    findingElements,
     findingClassifications: primary.content.findingClassifications ?? [],
     documentationRequirements,
     sources: sorted.map((p) => ({ packCode: p.packCode, packVersion: p.packVersion })),

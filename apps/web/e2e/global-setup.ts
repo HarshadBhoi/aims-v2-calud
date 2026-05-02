@@ -89,6 +89,54 @@ const GAGAS_PACK = {
   },
 };
 
+/**
+ * Slice B (W4 closeout): IIA-GIAS-2024.1 pack content available for the
+ * slice-B journey test to attach as a secondary methodology. The slice-A
+ * e2e never references this — it stays GAGAS-only. The multi-pack journey
+ * exercises canonical-key translation: IIA's pack-element-codes diverge
+ * (ROOT_CAUSE → canonical CAUSE, CONSEQUENCE → canonical EFFECT,
+ * RECOMMENDATION close-mapped) so the test assertions cover the
+ * cross-pack render path end-to-end.
+ */
+const IIA_GIAS_PACK = {
+  code: "IIA-GIAS",
+  version: "2024.1",
+  type: "methodology",
+  name: "Global Internal Audit Standards",
+  commonName: "IIA GIAS 2024",
+  issuingBody: "Institute of Internal Auditors (IIA)",
+  publishedYear: 2024,
+  effectiveFrom: "2025-01-09",
+  schemaVersion: "1.0.0",
+  findingElements: [
+    { code: "CRITERIA", name: "Criteria", required: true, minLength: 50 },
+    { code: "CONDITION", name: "Condition", required: true, minLength: 50 },
+    { code: "ROOT_CAUSE", name: "Root Cause", required: true, minLength: 50 },
+    { code: "CONSEQUENCE", name: "Consequence", required: true, minLength: 50 },
+    { code: "RECOMMENDATION", name: "Recommendation", required: true, minLength: 50 },
+  ],
+  findingClassifications: [
+    { code: "LOW", severity: 1 },
+    { code: "MEDIUM", severity: 2 },
+    { code: "HIGH", severity: 3 },
+    { code: "CRITICAL", severity: 4 },
+  ],
+  semanticElementMappings: [
+    { semanticCode: "CRITERIA", packElementCode: "CRITERIA", equivalenceStrength: "exact" },
+    { semanticCode: "CONDITION", packElementCode: "CONDITION", equivalenceStrength: "exact" },
+    { semanticCode: "CAUSE", packElementCode: "ROOT_CAUSE", equivalenceStrength: "exact" },
+    { semanticCode: "EFFECT", packElementCode: "CONSEQUENCE", equivalenceStrength: "exact" },
+    { semanticCode: "RECOMMENDATION", packElementCode: "RECOMMENDATION", equivalenceStrength: "close" },
+  ],
+  independenceRules: { coolingOffPeriodMonths: 12 },
+  cpeRequirements: { requiredHoursPerCycle: null as number | null },
+  documentationRequirements: {
+    fourElementComplete: false,
+    workPaperCitationRequired: true,
+    retentionYears: 5,
+  },
+};
+
 function sha256Canonical(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
@@ -131,7 +179,10 @@ export default async function globalSetup(): Promise<void> {
       RESTART IDENTITY CASCADE
     `);
 
-    // ─── Pack ─────────────────────────────────────────────────────────────
+    // ─── Packs ────────────────────────────────────────────────────────────
+    // GAGAS is what slice-A's e2e attaches to the seeded engagement; IIA-GIAS
+    // is available as a StandardPack so the slice-B e2e can attach it as a
+    // secondary methodology via the API.
     await prisma.standardPack.create({
       data: {
         code: E2E_PACK_CODE,
@@ -141,6 +192,17 @@ export default async function globalSetup(): Promise<void> {
         publishedYear: GAGAS_PACK.publishedYear,
         packContent: GAGAS_PACK,
         contentHash: `sha256:${sha256Canonical(GAGAS_PACK)}`,
+      },
+    });
+    await prisma.standardPack.create({
+      data: {
+        code: IIA_GIAS_PACK.code,
+        version: IIA_GIAS_PACK.version,
+        name: IIA_GIAS_PACK.name,
+        issuingBody: IIA_GIAS_PACK.issuingBody,
+        publishedYear: IIA_GIAS_PACK.publishedYear,
+        packContent: IIA_GIAS_PACK,
+        contentHash: `sha256:${sha256Canonical(IIA_GIAS_PACK)}`,
       },
     });
 
