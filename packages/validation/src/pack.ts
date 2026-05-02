@@ -69,6 +69,14 @@ export type FindingElementRequirement = {
   readonly name: string;
   readonly required: boolean;
   readonly minLength: number;
+  /**
+   * Slice B (per VERTICAL-SLICE-B-PLAN §4 W2 day 3-4 + ADR-0010):
+   * displayed by the cross-pack renderer when a `partial` mapping fires
+   * and the source value can't be faithfully translated. Optional —
+   * the renderer falls back to a generic "(no faithful equivalent)" line
+   * when absent.
+   */
+  readonly fallbackPrompt?: string;
 };
 
 export type FindingClassificationRequirement = {
