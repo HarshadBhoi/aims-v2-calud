@@ -8,7 +8,7 @@ Onboarding doc for any Claude Code session (or new engineer) opening this repo. 
 
 **AIMS v2** — a multi-standard, enterprise SaaS audit information management platform. Greenfield spec work extending AIMS v1 (a GAGAS-only SharePoint SPFx app, lives in a separate repo at `aaryapaar.sharepoint.com/sites/smb`) into an independent, multi-tenant, multi-standard SaaS.
 
-**What's in the repo today (2026-04-28)**: the 48-file spec tier plus a working Slice A monorepo through end of Week 4 — substrate, auth, tRPC API, Next.js shell, full finding-and-report loop with MFA-gated approval, NestJS worker rendering signed PDFs to S3, presigned download, audit log viewer + chain verification, and end-to-end OTel trace propagation. Week 5-6 (buffer / polish / soak) is the remaining slice scope.
+**What's in the repo today (2026-05-01)**: the 48-file spec tier plus a working Slice A monorepo through end of Week 5 — substrate, auth, tRPC API, Next.js shell, full finding-and-report loop with MFA-gated approval, NestJS worker rendering signed PDFs to S3, presigned download, audit log viewer + chain verification, end-to-end OTel trace propagation, Playwright e2e (slice-A journey + session revocation), cross-tenant isolation sweep, ADR-0002 `DATABASE_URL` split landed, and a perf pass that trimmed redundant round-trips on the report router. Phases reconciliation is the remaining slice-A deliverable.
 
 ---
 
@@ -17,10 +17,10 @@ Onboarding doc for any Claude Code session (or new engineer) opening this repo. 
 - ✅ **Tier 1 — Foundations**: 10 design tracks complete (product, API, auth, database, devops, engineering, frontend, security, data-model, docs)
 - ✅ **Phase 1-6 product specification**: all closed with external Gemini R1 reviews. 48 files, ~39,000 lines.
 - ✅ **5-phase analytical audit by Gemini**: all PASSED (see `audits/`). "The repository is fully validated and ready for Tier 2: Technical Construction."
-- 🚧 **Tier 2 — Vertical Slice A** (active): full vertical slice shipped through end of Week 4 — engagement → finding → submit → MFA-gated approve → report → sign → outbox → worker → PDF → S3 → presigned download, plus the audit-log viewer and end-to-end OTel propagation. **97 integration tests passing** (77 api, 20 worker).
-  - W1 substrate ✅, W2 auth + API skeleton ✅, W3 finding loop ✅, W4 reports + PDF + OTel ✅
-  - W5-6 next: buffer / polish / soak — performance, integration sweeps, optional session-revocation E2E, spec-delta closeout
-  - Spec drift accumulated in [`SPEC-DELTA-LOG.md`](SPEC-DELTA-LOG.md)
+- 🚧 **Tier 2 — Vertical Slice A** (closing out): full vertical slice plus W5 polish/soak shipped — engagement → finding → submit → MFA-gated approve → report → sign → outbox → worker → PDF → S3 → presigned download, audit-log viewer, end-to-end OTel propagation, Playwright e2e for the journey + session revocation, cross-tenant isolation sweep across W3+W4 procedures, ADR-0002 two-URL Postgres split, and a perf pass on the hottest report-router path. **105 integration tests passing** (85 api, 20 worker) + 2 e2e specs green.
+  - W1 substrate ✅, W2 auth + API skeleton ✅, W3 finding loop ✅, W4 reports + PDF + OTel ✅, W5 polish/soak ✅ (e2e, isolation sweep, DB-URL split, perf, ADR-0008/0009 acceptance)
+  - W6 remaining: phases reconciliation (annotate stale `phases/` files per CLAUDE.md §3)
+  - Spec drift catalogued + closed-out in [`SPEC-DELTA-LOG.md`](SPEC-DELTA-LOG.md) (six entries, all carry into Slice B)
 
 ---
 
@@ -104,12 +104,13 @@ aims-v2-platform/
 
 **Scope**: solo engineer, 4-6 weeks, Docker compose on dev laptop (NOT real AWS).
 
-**Progress** (as of 2026-04-28):
+**Progress** (as of 2026-05-01):
 - ✅ **W1 substrate** — monorepo, docker compose, Prisma schema, tenant extension, RLS, ALE, audit-log hash chain, seeds
 - ✅ **W2 auth + API** — Better-Auth-style password + TOTP + EdDSA JWT + Redis blocklist; Fastify + tRPC; engagement + pack procedures; Next.js shell with sign-in
 - ✅ **W3 finding loop** — finding CRUD with ALE-encrypted elements, autosave editor, four-element progress bar, submit-for-review, MFA-gated decide flow with auto-replay step-up; review queue UI
 - ✅ **W4 reports + PDF + OTel** — report compose/sign with typed attestation, transactional outbox, NestJS worker, pdfkit render, S3 archive, presigned download, audit-log viewer + verify-chain, end-to-end W3C trace propagation across the SQS boundary
-- 🚧 **W5-6 polish/buffer** — performance tuning, integration sweeps, optional session-revocation E2E (slice plan recommendation), spec-delta closeout
+- ✅ **W5 polish/soak** — Playwright e2e (slice-A journey + session revocation), cross-tenant isolation sweep, ADR-0002 `DATABASE_URL` split into tenant + admin, perf pass on report router, ADR-0008/0009 acceptance + docs/06 narrative, spec-delta closeout
+- 🚧 **W6 remaining** — phases reconciliation pass (annotate stale `phases/*` files per CLAUDE.md §3 / VERTICAL-SLICE-PLAN.md §5)
 
 **Explicit deferrals** (§1.3 of slice plan): PBC, CAP, PRCM, APM, QA, multi-standard, auditee portal, SSO, billing, fieldwork, real-time collab. All future slices.
 
@@ -187,4 +188,4 @@ This repo was extracted from a larger working folder (`/Users/harshadbhaibhoi/Do
 
 ---
 
-*Last updated: 2026-04-28. Maintain this file as project state changes — especially §2 (status), §5 (active work), §7 (anti-patterns learned), and §10 (memory status after any re-location).*
+*Last updated: 2026-05-01. Maintain this file as project state changes — especially §2 (status), §5 (active work), §7 (anti-patterns learned), and §10 (memory status after any re-location).*

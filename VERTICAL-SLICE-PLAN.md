@@ -1,6 +1,6 @@
 # AIMS v2 — Vertical Slice Plan (Slice A: Engagement → Finding → PDF)
 
-**Status**: Draft · 2026-04-22
+**Status**: Closing out · 2026-05-01 (W5 polish/soak ✅ landed; W6 = phases reconciliation only)
 **Purpose**: The first code-not-specs artifact. One narrow, end-to-end user journey implemented across every load-bearing architectural layer, proving the 48-file spec set composes into a working system.
 
 This is not an MVP, not a product, not a demo suitable for prospects. It is a **risk-burn-down exercise**: if the spec tier is wrong anywhere load-bearing, this slice surfaces it before a team is hired and committed.
@@ -246,6 +246,17 @@ Use weeks 5-6 for:
 - Documentation of what was learned vs. what the spec said (the spec delta log)
 
 If the slice was cleaner than expected, use the time to pull in one deferred item — my recommendation would be **session revocation tested end-to-end** (ADR-0005) since it's a common first-production bite.
+
+**Actual W5 outcome (2026-05-01)**:
+- ✅ Playwright e2e — slice-A journey + session revocation (the recommended deferred item, pulled in)
+- ✅ Cross-tenant isolation sweep across W3+W4 procedures (8 new tests)
+- ✅ ADR-0002 `DATABASE_URL` split into tenant + admin connections (caught + fixed during e2e bring-up; entry in [`SPEC-DELTA-LOG.md`](SPEC-DELTA-LOG.md))
+- ✅ Performance pass on report router (consolidated round-trips on `loadReportWithVersion` + `regenerateDataSections`); single-user baseline captured
+- ✅ ADR-0008 (ControlMatrix) and ADR-0009 (RiskAssessment) flipped Proposed → Accepted; narrative bullets added to `docs/06-design-decisions.md` §1.9 + §1.10
+- ✅ Spec-delta closeout — six entries catalogued, status table at top of [`SPEC-DELTA-LOG.md`](SPEC-DELTA-LOG.md) for slice-B handoff
+
+**W6 remaining**:
+- 🚧 Phases reconciliation pass — annotate stale `phases/*` files per CLAUDE.md §3 / §5 of this doc
 
 ---
 

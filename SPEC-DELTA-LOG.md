@@ -21,7 +21,55 @@ Status values:
 
 ---
 
+## Slice A closeout summary (2026-05-01)
+
+Six entries across W3-W4-W5; all 🔄 In effect at slice close. None forced a re-architecture; each is "spec was over-prescriptive in a place that didn't matter for proving the substrate, reality is simpler and convertible later when load-bearing."
+
+| Entry | Date | Carries into Slice B as… |
+|---|---|---|
+| OTel — per-service ConsoleSpanExporter, no Collector | 2026-04-28 | Add Collector + OTLP exporter when first cloud backend (Tempo / Grafana Cloud) is wired up |
+| OTel — browser instrumentation deferred | 2026-04-28 | Add `@opentelemetry/sdk-trace-web` + `instrumentation-fetch` when RUM or browser perf budgets become a real ask |
+| Worker — admin Prisma + DB trigger for audit log | 2026-04-28 | Either set per-tx GUCs for richer trigger context, or move to app-level audit writes when service-identity flow exists |
+| Finding editor — textarea, not TipTap | 2026-04-28 | Drop in TipTap when rich-text becomes a real auditor request — UI-only change, wire contract is `Record<string, string>` |
+| Pack resolver — in `apps/api/`, not separate package | 2026-04-28 | Extract to `packages/pack-resolver` when a second consumer (NestJS worker pre-resolution, CLI) needs it |
+| Database — `DATABASE_URL` split into tenant + admin URLs | 2026-05-01 | Both URLs are now load-bearing; deployment templates must provision two roles + two secrets per environment |
+
+**Specs to update at slice handoff** (also tracked via the entries below):
+- `VERTICAL-SLICE-PLAN.md §4 W4 task 4.8` — soften "OTel Collector → console exporter" wording; flag browser instrumentation as deferred.
+- `VERTICAL-SLICE-PLAN.md §4 W4 task 4.5` — drop "running under same tenant context via session token"; trigger model is correct + simpler.
+- `VERTICAL-SLICE-PLAN.md §4 W3 task 3.3` — TipTap is aspirational, not slice-A scope.
+- `VERTICAL-SLICE-PLAN.md §4 W3 task 3.1` — pack resolver lives in `apps/api/`; extraction-when-needed.
+- `VERTICAL-SLICE-PLAN.md §4 W2 task 2.1` (or wherever DB config is named) — call out the two-URL pattern explicitly.
+
+The spec updates themselves are deliberately **deferred** — touching the slice plan during slice A would be revisionist; the log is the canonical record until slice B's planning incorporates the deltas.
+
+---
+
 ## Entries
+
+### 2026-05-01 — 2.x `DATABASE_URL` split into tenant + admin connections
+
+**Status:** 🔄 In effect
+
+**Spec ([VERTICAL-SLICE-PLAN.md §4 W2](VERTICAL-SLICE-PLAN.md)):**
+> The slice-plan W2 setup implicitly assumes a single `DATABASE_URL` is enough for the api + worker. Both ADR-0002 (two-layer tenant isolation) and the seed/admin client patterns presuppose RLS-bypassing access exists, but the env contract for *how* that's exposed wasn't pinned down.
+
+**Reality:**
+- Two env vars now: `DATABASE_URL` (tenant client, `aims_app` role, RLS-bound — the request path 99% of queries take) and `DATABASE_ADMIN_URL` (admin client, `aims_migration` role, BYPASSRLS — auth's tenant lookup, audit-log chain verify, the worker's outbox drain). Surfaced and pinned in commit `e3599e2`.
+- `apps/api/src/config.ts`, `apps/api/src/services.ts`, `apps/worker/src/config.ts`, `apps/worker/src/db/db.module.ts` thread the admin URL into `createAdminPrismaClient({ datasourceUrl })` everywhere the admin client is built.
+- Same plumbing landed in `apps/web/e2e/global-setup.ts` and `apps/web/e2e/session-revocation.spec.ts` in commit `c6e870e` after they regressed on first e2e run with a fresh role split.
+- `.env.example` documents both URLs with the ADR-0002 rationale.
+
+**Why:**
+- Workaround discovered during e2e bring-up: bumping the entire `DATABASE_URL` to the migration role made the tenant client *also* bypass RLS — defeating ADR-0002's defense-in-depth promise. Splitting is the only correct shape.
+- Auth's `tenant.findUnique` on a slug *must* cross-tenant before the request has a known tenant context (chicken-and-egg). The tenant client can't satisfy that under RLS, so a second connection is structurally required.
+
+**Implication:**
+- Cloud deployment templates (Helm / OpenTofu) must provision **two** Postgres roles per environment (`aims_app` with no `BYPASSRLS`, `aims_migration` with `BYPASSRLS`) and **two** Secrets Manager entries. `DATABASE_MIGRATION_URL` (the third URL in `.env.example`, used only by `prisma migrate`) can collapse onto `DATABASE_ADMIN_URL` if the migration role is the same — currently they are, kept separate for clarity of intent.
+- Spec to update: VERTICAL-SLICE-PLAN.md §4 W2 (or a new §6 "Environment contract" section) — call out the three-URL env pattern with rationale.
+- Future slice that introduces support-mode / break-glass cross-tenant tooling reuses `DATABASE_ADMIN_URL` rather than introducing a fourth role.
+
+---
 
 ### 2026-04-28 — 4.8 OTel uses per-service ConsoleSpanExporter; no Collector container yet
 
