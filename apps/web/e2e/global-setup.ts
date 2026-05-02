@@ -209,6 +209,35 @@ export default async function globalSetup(): Promise<void> {
       },
     });
 
+    // Slice B (per ADR-0011): finding.create / submitForReview now read the
+    // engagement's persisted EngagementStrictness row. The resolver writes it
+    // automatically when pack.attach goes through the tRPC procedure, but
+    // this setup uses direct Prisma inserts — synthesize the row to match
+    // what the resolver would have produced for a GAGAS-only engagement.
+    await prisma.engagementStrictness.create({
+      data: {
+        tenantId: tenant.id,
+        engagementId: engagement.id,
+        retentionYears: 7,
+        coolingOffMonths: 24,
+        cpeHours: 80,
+        documentationRequirements: GAGAS_PACK.documentationRequirements,
+        requiredCanonicalCodes: ["CAUSE", "CONDITION", "CRITERIA", "EFFECT"],
+        drivenBy: [
+          {
+            rule: "retentionYears",
+            value: 7,
+            source: { packCode: E2E_PACK_CODE, packVersion: E2E_PACK_VERSION, direction: "max" },
+          },
+          {
+            rule: "coolingOffMonths",
+            value: 24,
+            source: { packCode: E2E_PACK_CODE, packVersion: E2E_PACK_VERSION, direction: "max" },
+          },
+        ],
+      },
+    });
+
     console.warn(
       `[e2e:global-setup] seeded tenant=${E2E_TENANT_SLUG} user=${E2E_USER_EMAIL} engagement=${engagement.id} (MFA enrolled, pack=${E2E_PACK_CODE}:${E2E_PACK_VERSION})`,
     );

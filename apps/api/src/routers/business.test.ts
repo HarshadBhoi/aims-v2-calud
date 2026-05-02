@@ -57,7 +57,23 @@ function makeAuthedContext(
   services: Services,
   opts: { mfaFreshUntil?: Date | null; userId?: string; tenantId?: string } = {},
 ): RequestContext {
-  const req = { ip: "127.0.0.1", headers: { "user-agent": "vitest/business" }, cookies: {} };
+  // Minimal `log` shim — slice-B W2.1 finding.ts emits deprecation warnings
+  // via ctx.req.log when pack-element-codes come in.
+  const log = {
+    warn: () => undefined,
+    info: () => undefined,
+    error: () => undefined,
+    debug: () => undefined,
+    trace: () => undefined,
+    fatal: () => undefined,
+    child: () => log,
+  };
+  const req = {
+    ip: "127.0.0.1",
+    headers: { "user-agent": "vitest/business" },
+    cookies: {},
+    log,
+  };
   const res = {
     setCookie() {
       return res;
@@ -1009,6 +1025,192 @@ describe("finding router", () => {
     const inA = await caller.finding.list({ engagementId: a.engagementId });
     expect(inA.map((f) => f.title)).toContain("in A");
     expect(inA.map((f) => f.title)).not.toContain("in B");
+  });
+});
+
+describe("finding router — canonical key contract (slice B W2.1)", () => {
+  // Helper: an engagement attached to GAGAS (primary) + IIA (additional).
+  // Strictness union: { CRITERIA, CONDITION, CAUSE, EFFECT, RECOMMENDATION }.
+  // GAGAS's pack-element-codes happen to match canonical names; IIA diverges
+  // (ROOT_CAUSE → CAUSE, CONSEQUENCE → EFFECT). The tests exercise both the
+  // pass-through path (canonical input) and the translation path (pack-code
+  // input).
+  async function multiPackEngagement(suffix: string): Promise<string> {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const eng = await caller.engagement.create({
+      name: `slice-b-w21-${suffix}`,
+      auditeeName: "MultiCo",
+      fiscalPeriod: "FY27",
+      periodStart: new Date("2027-01-01"),
+      periodEnd: new Date("2027-12-31"),
+      leadUserId: userId,
+    });
+    await caller.pack.attach({
+      engagementId: eng.id,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+    await caller.pack.attach({
+      engagementId: eng.id,
+      packCode: "IIA-GIAS",
+      packVersion: "2024.1",
+    });
+    return eng.id;
+  }
+
+  const LONG = "x".repeat(60);
+
+  it("create accepts canonical-code input and stores it canonical-keyed", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const engId = await multiPackEngagement("create-canonical");
+
+    const finding = await caller.finding.create({
+      engagementId: engId,
+      title: "Canonical-input finding",
+      initialElements: {
+        // Canonical codes — pass through unchanged.
+        CRITERIA: LONG,
+        CONDITION: LONG,
+        CAUSE: LONG,
+        EFFECT: LONG,
+        RECOMMENDATION: LONG,
+      },
+    });
+    // Union has 5 required canonical codes; all 5 supplied → complete.
+    expect(finding.elementsComplete).toBe(5);
+    // Re-read: same canonical-keyed values should be visible.
+    const fetched = await caller.finding.get({ id: finding.id });
+    expect(Object.keys(fetched.elementValues).sort()).toEqual([
+      "CAUSE",
+      "CONDITION",
+      "CRITERIA",
+      "EFFECT",
+      "RECOMMENDATION",
+    ]);
+  });
+
+  it("create accepts pack-element-code input and translates to canonical (deprecation logged)", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const engId = await multiPackEngagement("create-pack-codes");
+
+    const finding = await caller.finding.create({
+      engagementId: engId,
+      title: "Pack-code-input finding",
+      initialElements: {
+        // GAGAS uses these codes (also canonical for GAGAS).
+        CRITERIA: LONG,
+        CONDITION: LONG,
+        CAUSE: LONG,
+        EFFECT: LONG,
+        // RECOMMENDATION supplied as canonical (GAGAS doesn't declare it).
+        RECOMMENDATION: LONG,
+      },
+    });
+    expect(finding.elementsComplete).toBe(5);
+    // Storage keys are canonical regardless of input shape.
+    const fetched = await caller.finding.get({ id: finding.id });
+    expect(Object.keys(fetched.elementValues).sort()).toEqual([
+      "CAUSE",
+      "CONDITION",
+      "CRITERIA",
+      "EFFECT",
+      "RECOMMENDATION",
+    ]);
+  });
+
+  it("create rejects unknown element codes", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const engId = await multiPackEngagement("create-unknown");
+
+    await expect(
+      caller.finding.create({
+        engagementId: engId,
+        title: "Bad input",
+        initialElements: { GHOST_CODE: LONG },
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("elementsComplete counts against the strictness union (5 codes), not just primary's 4", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const engId = await multiPackEngagement("complete-union");
+
+    // Fill only the 4 GAGAS codes — RECOMMENDATION (added by IIA) is missing.
+    const finding = await caller.finding.create({
+      engagementId: engId,
+      title: "GAGAS-only fill on multi-pack engagement",
+      initialElements: {
+        CRITERIA: LONG,
+        CONDITION: LONG,
+        CAUSE: LONG,
+        EFFECT: LONG,
+      },
+    });
+    expect(finding.elementsComplete).toBe(4);
+
+    // Slice-A counted 4/4 as complete on a single-pack GAGAS engagement.
+    // Slice-B counts against the union, so the multi-pack version expects
+    // 5 — submit-for-review must reject.
+    await expect(
+      caller.finding.submitForReview({
+        id: finding.id,
+        expectedVersion: finding.version,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
+  it("updateElement accepts pack-element-code that maps to a canonical (single-key autosave)", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const engId = await multiPackEngagement("update-pack-code");
+
+    const finding = await caller.finding.create({
+      engagementId: engId,
+      title: "Update test",
+      initialElements: {},
+    });
+
+    // Send the IIA pack-element-code "ROOT_CAUSE" — server translates to
+    // canonical "CAUSE" before storage.
+    const updated = await caller.finding.updateElement({
+      id: finding.id,
+      expectedVersion: finding.version,
+      elementCode: "ROOT_CAUSE",
+      value: LONG,
+    });
+    expect(updated.elementValues["CAUSE"]).toBe(LONG);
+    expect(updated.elementValues["ROOT_CAUSE"]).toBeUndefined();
+    expect(updated.elementsComplete).toBe(1);
+  });
+
+  it("submitForReview succeeds when all 5 union codes are filled (multi-pack)", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const engId = await multiPackEngagement("submit-multi");
+
+    const finding = await caller.finding.create({
+      engagementId: engId,
+      title: "All-five fill",
+      initialElements: {
+        CRITERIA: LONG,
+        CONDITION: LONG,
+        CAUSE: LONG,
+        EFFECT: LONG,
+        RECOMMENDATION: LONG,
+      },
+    });
+    expect(finding.elementsComplete).toBe(5);
+
+    const submitted = await caller.finding.submitForReview({
+      id: finding.id,
+      expectedVersion: finding.version,
+    });
+    expect(submitted.status).toBe("IN_REVIEW");
   });
 });
 

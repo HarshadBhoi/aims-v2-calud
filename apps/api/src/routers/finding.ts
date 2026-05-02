@@ -32,7 +32,13 @@ import {
 } from "@aims/validation";
 import { TRPCError } from "@trpc/server";
 
-import { resolvePackRequirements } from "../packs/resolver";
+import {
+  countCanonicalElementsComplete,
+  normalizeElementKey,
+  normalizeToCanonical,
+  translateCanonicalToPack,
+} from "../packs/key-translation";
+import { type ExpectedPackContent } from "../packs/resolver";
 import {
   authenticatedProcedure,
   mfaFreshProcedure,
@@ -42,6 +48,11 @@ import {
 
 export const findingRouter = router({
   // ─── create ─────────────────────────────────────────────────────────────
+  // Slice B (per ADR-0010): new findings are canonical-native. Storage keys
+  // are canonical semantic codes; `elementsCanonicalized=true`. The input
+  // accepts either pack-element-codes (legacy slice-A clients) or canonical
+  // codes (slice-B native); the server normalizes and logs a deprecation
+  // warning for any pack-element-codes submitted.
   create: authenticatedProcedure
     .input(CreateFindingInput)
     .mutation(async ({ ctx, input }): Promise<FindingDetail> => {
@@ -52,14 +63,31 @@ export const findingRouter = router({
         throw new TRPCError({ code: "NOT_FOUND", message: "Engagement not found." });
       }
 
-      const resolved = await resolvePackRequirements(
-        input.engagementId,
-        ctx.services.prismaTenant,
-      );
+      const { primaryPackContent, mergedMappingsContent, requiredCanonicalCodes } =
+        await loadCanonicalContext(ctx.services.prismaTenant, input.engagementId);
 
-      const elements = input.initialElements ?? {};
-      validateElementCodes(elements, resolved.findingElements);
-      const elementsComplete = countCompleteElements(elements, resolved.findingElements);
+      const rawElements = input.initialElements ?? {};
+      const { normalized: elements, deprecatedKeys } = normalizeToCanonical(
+        rawElements,
+        mergedMappingsContent,
+      );
+      if (deprecatedKeys.length > 0) {
+        ctx.req.log.warn(
+          {
+            engagementId: input.engagementId,
+            tenantId: ctx.session.tenantId,
+            deprecatedKeys,
+          },
+          "finding.create received pack-element-codes; translated to canonical " +
+            "(per ADR-0010). Update clients to send canonical codes directly.",
+        );
+      }
+
+      const elementsComplete = countCanonicalElementsComplete(
+        elements,
+        requiredCanonicalCodes,
+        primaryPackContent,
+      );
 
       const cipher = await ctx.services.encryption.encryptJson(
         ctx.session.tenantId,
@@ -83,6 +111,7 @@ export const findingRouter = router({
             classification: input.classification ?? "SIGNIFICANT",
             elementValuesCipher: cipher,
             elementsComplete,
+            elementsCanonicalized: true,
             authorId: ctx.session.userId,
             validFrom,
           },
@@ -140,7 +169,16 @@ export const findingRouter = router({
     },
   ),
 
-  // ─── updateElement (autosave from TipTap) ───────────────────────────────
+  // ─── updateElement (autosave) ───────────────────────────────────────────
+  // Per ADR-0010: input `elementCode` may be either a pack-element-code or
+  // a canonical semantic code. The server normalizes to canonical, then
+  // writes against the finding's current storage shape:
+  //   - elementsCanonicalized=true (slice-B-native + post-migration)  →
+  //     stored canonical-keyed; just write `next[canonical] = value`.
+  //   - elementsCanonicalized=false (legacy slice-A finding)           →
+  //     stored pack-keyed; translate canonical back to pack via the
+  //     primary pack's mappings before writing. Run the W1 migration
+  //     script to flip these to the canonical-native shape.
   updateElement: authenticatedProcedure
     .input(UpdateFindingElementInput)
     .mutation(async ({ ctx, input }): Promise<FindingDetail> => {
@@ -153,16 +191,25 @@ export const findingRouter = router({
       assertVersion(current.version, input.expectedVersion);
       assertStatus(current.status, "DRAFT", "Element edits");
 
-      const resolved = await resolvePackRequirements(
-        current.engagementId,
-        ctx.services.prismaTenant,
+      const { primaryPackContent, mergedMappingsContent, requiredCanonicalCodes } =
+        await loadCanonicalContext(ctx.services.prismaTenant, current.engagementId);
+
+      const { canonical, wasDeprecated } = normalizeElementKey(
+        input.elementCode,
+        mergedMappingsContent,
       );
-      const knownCodes = new Set(resolved.findingElements.map((e) => e.code));
-      if (!knownCodes.has(input.elementCode)) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: `Unknown element code "${input.elementCode}" for the engagement's pack.`,
-        });
+      if (wasDeprecated) {
+        ctx.req.log.warn(
+          {
+            findingId: current.id,
+            engagementId: current.engagementId,
+            tenantId: ctx.session.tenantId,
+            submittedCode: input.elementCode,
+            canonicalCode: canonical,
+          },
+          "finding.updateElement received a pack-element-code; translated to " +
+            "canonical (per ADR-0010). Update clients to send canonical codes.",
+        );
       }
 
       const elements = await decryptElements(
@@ -170,11 +217,39 @@ export const findingRouter = router({
         ctx.session.tenantId,
         current.elementValuesCipher,
       );
-      const next: Record<string, string> = { ...elements, [input.elementCode]: input.value };
-      const elementsComplete = countCompleteElements(next, resolved.findingElements);
+
+      // Build the new payload in whatever shape the finding's storage uses.
+      // Canonical-native: keys are canonical, write canonical.
+      // Legacy pack-keyed: translate canonical → pack-element-code for the
+      // single key being updated, write pack-keyed. The other keys stay as
+      // they were.
+      let nextStored: Record<string, string>;
+      let nextCanonicalView: Record<string, string>;
+      if (current.elementsCanonicalized) {
+        nextStored = { ...elements, [canonical]: input.value };
+        nextCanonicalView = nextStored;
+      } else {
+        const packKey = translateCanonicalToPack(
+          { [canonical]: input.value },
+          primaryPackContent,
+        );
+        nextStored = { ...elements, ...packKey };
+        // For elementsComplete counting, view through the canonical lens.
+        const { normalized: viewed } = normalizeToCanonical(
+          nextStored,
+          primaryPackContent,
+        );
+        nextCanonicalView = viewed;
+      }
+
+      const elementsComplete = countCanonicalElementsComplete(
+        nextCanonicalView,
+        requiredCanonicalCodes,
+        primaryPackContent,
+      );
       const cipher = await ctx.services.encryption.encryptJson(
         ctx.session.tenantId,
-        next,
+        nextStored,
       );
 
       const updated = await ctx.services.prismaTenant.finding.update({
@@ -186,7 +261,7 @@ export const findingRouter = router({
         },
       });
 
-      return toDetail(updated, next);
+      return toDetail(updated, nextStored);
     }),
 
   // ─── submitForReview ────────────────────────────────────────────────────
@@ -202,11 +277,14 @@ export const findingRouter = router({
       assertVersion(current.version, input.expectedVersion);
       assertStatus(current.status, "DRAFT", "Submit for review");
 
-      const resolved = await resolvePackRequirements(
-        current.engagementId,
+      // Per ADR-0011: "complete" means every required canonical code (from
+      // the union across all attached packs) has a value of sufficient
+      // length. The persisted strictness row carries that union.
+      const { requiredCanonicalCodes } = await loadCanonicalContext(
         ctx.services.prismaTenant,
+        current.engagementId,
       );
-      const requiredCount = resolved.findingElements.filter((e) => e.required).length;
+      const requiredCount = requiredCanonicalCodes.length;
       if (current.elementsComplete < requiredCount) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
@@ -332,32 +410,88 @@ async function nextFindingNumber(
   return `F-${year.toString()}-${(count + 1).toString().padStart(4, "0")}`;
 }
 
-function validateElementCodes(
-  values: Record<string, string>,
-  allowed: readonly { code: string }[],
-): void {
-  const allowedSet = new Set(allowed.map((e) => e.code));
-  for (const code of Object.keys(values)) {
-    if (!allowedSet.has(code)) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: `Unknown element code "${code}" for the engagement's pack.`,
-      });
+/**
+ * Loads the engagement's full pack-attachment context + the persisted
+ * strictness row. Returns:
+ *   - primaryPackContent: the primary pack's content, used for label
+ *     resolution and the minLength lookup in completion counting.
+ *   - mergedMappingsContent: a synthetic pack content that *unions* every
+ *     attached pack's `semanticElementMappings`. The key-translation
+ *     helpers operate on a single content shape, so we merge upstream so
+ *     they can recognize codes from secondary packs too (e.g., IIA's
+ *     ROOT_CAUSE / CONSEQUENCE / RECOMMENDATION when GAGAS is primary).
+ *   - requiredCanonicalCodes: union from the strictness row (ADR-0011).
+ *
+ * Throws PRECONDITION_FAILED if the engagement has no primary pack
+ * attached or no persisted strictness row (the resolver hasn't run yet).
+ */
+async function loadCanonicalContext(
+  prisma: AuthedPrisma,
+  engagementId: string,
+): Promise<{
+  primaryPackContent: ExpectedPackContent;
+  mergedMappingsContent: ExpectedPackContent;
+  requiredCanonicalCodes: readonly string[];
+}> {
+  const attachments = await prisma.packAttachment.findMany({
+    where: { engagementId },
+    include: { pack: true },
+  });
+  const primaryAttachment = attachments.find((a) => a.isPrimary);
+  if (!primaryAttachment) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Engagement has no primary pack attached. Attach a pack via pack.attach first.",
+    });
+  }
+  const strictness = await prisma.engagementStrictness.findUnique({
+    where: { engagementId },
+  });
+  if (!strictness) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "No strictness row for this engagement. The resolver hasn't run — call pack.attach (or detach/swap) to populate.",
+    });
+  }
+
+  const primaryPackContent = primaryAttachment.pack.packContent as ExpectedPackContent;
+
+  // Merge every attached pack's mappings + findingElements so the
+  // key-translation helpers can validate codes contributed by secondary
+  // packs. On code collisions (a packElementCode declared by both packs
+  // mapping to different canonicals), the primary wins — that matches the
+  // "primary precedence" invariant from ADR-0011.
+  const mergedMappings: NonNullable<ExpectedPackContent["semanticElementMappings"]> = [];
+  const mergedFindingElements: NonNullable<ExpectedPackContent["findingElements"]> = [];
+  const seenPackCodes = new Set<string>();
+  const seenFindingElementCodes = new Set<string>();
+  // Iterate primary first so its mappings take precedence on duplicates.
+  const ordered = [primaryAttachment, ...attachments.filter((a) => !a.isPrimary)];
+  for (const a of ordered) {
+    const content = a.pack.packContent as ExpectedPackContent;
+    for (const m of content.semanticElementMappings ?? []) {
+      if (seenPackCodes.has(m.packElementCode)) continue;
+      seenPackCodes.add(m.packElementCode);
+      mergedMappings.push(m);
+    }
+    for (const fe of content.findingElements ?? []) {
+      if (seenFindingElementCodes.has(fe.code)) continue;
+      seenFindingElementCodes.add(fe.code);
+      mergedFindingElements.push(fe);
     }
   }
-}
+  const mergedMappingsContent: ExpectedPackContent = {
+    semanticElementMappings: mergedMappings,
+    findingElements: mergedFindingElements,
+  };
 
-function countCompleteElements(
-  values: Record<string, string>,
-  required: readonly { code: string; required: boolean; minLength: number }[],
-): number {
-  let count = 0;
-  for (const elem of required) {
-    if (!elem.required) continue;
-    const v = values[elem.code];
-    if (typeof v === "string" && v.length >= elem.minLength) count += 1;
-  }
-  return count;
+  return {
+    primaryPackContent,
+    mergedMappingsContent,
+    requiredCanonicalCodes: strictness.requiredCanonicalCodes,
+  };
 }
 
 async function decryptElements(
