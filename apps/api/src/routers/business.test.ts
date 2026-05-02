@@ -1117,3 +1117,200 @@ describe("auditLog router", () => {
   // a tampered cipher; the SQL function's logic is straightforward enough
   // that the positive path above is sufficient slice-A coverage.
 });
+
+describe("cross-tenant isolation sweep", () => {
+  // Seeds a sibling tenant with the minimum state needed to point at:
+  // engagement, finding (DRAFT + IN_REVIEW), and report (DRAFT + PUBLISHED
+  // with pdfS3Key). Uses the admin client (no tenant extension) so the
+  // writes aren't scoped to the active test tenant. Returns IDs the
+  // assertions then attempt to access from the *current* tenant's caller
+  // — every attempt should be rejected (NOT_FOUND) or filtered out
+  // (empty list).
+  async function seedSiblingTenant(): Promise<{
+    siblingTenantId: string;
+    siblingEngagementId: string;
+    siblingDraftFindingId: string;
+    siblingInReviewFindingId: string;
+    siblingReportId: string;
+  }> {
+    const { services, prisma } = requireSetup();
+
+    const sibling = await prisma.tenant.create({
+      data: {
+        slug: `sibling-${Date.now().toString()}`,
+        name: "Sibling Tenant",
+      },
+    });
+    await services.encryption.provisionTenantDek(sibling.id);
+
+    const siblingUser = await prisma.user.create({
+      data: {
+        tenantId: sibling.id,
+        email: `sibling-${Date.now().toString()}@x.test`,
+        name: "Sibling User",
+        role: "Senior",
+        status: "ACTIVE",
+      },
+    });
+
+    const siblingEngagement = await prisma.engagement.create({
+      data: {
+        tenantId: sibling.id,
+        name: "Sibling Engagement",
+        auditeeName: "SiblingCo",
+        fiscalPeriod: "FY26 sibling",
+        periodStart: new Date("2026-01-01"),
+        periodEnd: new Date("2026-12-31"),
+        leadUserId: siblingUser.id,
+      },
+    });
+    await prisma.packAttachment.create({
+      data: {
+        tenantId: sibling.id,
+        engagementId: siblingEngagement.id,
+        packCode: "GAGAS",
+        packVersion: "2024.1",
+        attachedBy: siblingUser.id,
+      },
+    });
+
+    const sectionsCipher = await services.encryption.encryptJson(sibling.id, {});
+    const draftFinding = await prisma.finding.create({
+      data: {
+        tenantId: sibling.id,
+        engagementId: siblingEngagement.id,
+        findingNumber: "F-2026-0001",
+        title: "Sibling DRAFT finding",
+        classification: "SIGNIFICANT",
+        elementValuesCipher: sectionsCipher,
+        elementsComplete: 0,
+        status: "DRAFT",
+        authorId: siblingUser.id,
+      },
+    });
+    const inReviewFinding = await prisma.finding.create({
+      data: {
+        tenantId: sibling.id,
+        engagementId: siblingEngagement.id,
+        findingNumber: "F-2026-0002",
+        title: "Sibling IN_REVIEW finding",
+        classification: "SIGNIFICANT",
+        elementValuesCipher: sectionsCipher,
+        elementsComplete: 4,
+        status: "IN_REVIEW",
+        authorId: siblingUser.id,
+      },
+    });
+
+    const siblingReport = await prisma.report.create({
+      data: {
+        tenantId: sibling.id,
+        engagementId: siblingEngagement.id,
+        templateKey: "engagement-report-v1",
+        title: "Sibling Report",
+        status: "PUBLISHED",
+        authorId: siblingUser.id,
+      },
+    });
+    await prisma.reportVersion.create({
+      data: {
+        tenantId: sibling.id,
+        reportId: siblingReport.id,
+        versionNumber: "v1.0",
+        isDraft: false,
+        contentCipher: sectionsCipher,
+        contentHash: "a".repeat(64),
+        signedBy: siblingUser.id,
+        signedAt: new Date(),
+        pdfS3Key: `reports/${sibling.id}/${siblingReport.id}/test.pdf`,
+        pdfRenderedAt: new Date(),
+      },
+    });
+
+    return {
+      siblingTenantId: sibling.id,
+      siblingEngagementId: siblingEngagement.id,
+      siblingDraftFindingId: draftFinding.id,
+      siblingInReviewFindingId: inReviewFinding.id,
+      siblingReportId: siblingReport.id,
+    };
+  }
+
+  it("finding.get rejects another tenant's finding id", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const seed = await seedSiblingTenant();
+    await expect(
+      caller.finding.get({ id: seed.siblingDraftFindingId }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("finding.list returns empty for another tenant's engagementId", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const seed = await seedSiblingTenant();
+    const items = await caller.finding.list({
+      engagementId: seed.siblingEngagementId,
+    });
+    expect(items).toEqual([]);
+  });
+
+  it("finding.listPending excludes another tenant's IN_REVIEW findings", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const seed = await seedSiblingTenant();
+    const items = await caller.finding.listPending();
+    expect(items.map((f) => f.id)).not.toContain(seed.siblingInReviewFindingId);
+  });
+
+  it("finding.updateElement rejects another tenant's finding id", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const seed = await seedSiblingTenant();
+    await expect(
+      caller.finding.updateElement({
+        id: seed.siblingDraftFindingId,
+        elementCode: "CRITERIA",
+        value: "x".repeat(60),
+        expectedVersion: 1,
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("report.get rejects another tenant's report id", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const seed = await seedSiblingTenant();
+    await expect(
+      caller.report.get({ id: seed.siblingReportId }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("report.list returns empty for another tenant's engagementId", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const seed = await seedSiblingTenant();
+    const items = await caller.report.list({
+      engagementId: seed.siblingEngagementId,
+    });
+    expect(items).toEqual([]);
+  });
+
+  it("report.downloadPdf rejects another tenant's report id", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const seed = await seedSiblingTenant();
+    await expect(
+      caller.report.downloadPdf({ id: seed.siblingReportId }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("engagement.get rejects another tenant's engagement id", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const seed = await seedSiblingTenant();
+    await expect(
+      caller.engagement.get({ id: seed.siblingEngagementId }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+});
