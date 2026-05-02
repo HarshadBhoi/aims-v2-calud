@@ -641,7 +641,11 @@ async function buildInitialSections(
         decryptedFindings.length > 0
           ? decryptedFindings
               .map((f) => {
-                const header = `${f.findingNumber} — ${f.title} [${f.classification}]`;
+                const targetClassification = translateClassificationToPack(
+                  f.classification,
+                  attestsToPack.packContent as PackContent,
+                );
+                const header = `${f.findingNumber} — ${f.title} [${targetClassification}]`;
                 const rows = f.rendered.rows.map((row) => {
                   const footer = row.footerNote !== null ? `\n    ${row.footerNote}` : "";
                   const value = row.value.length > 0 ? truncate(row.value, 200) : "(not provided)";
@@ -682,6 +686,43 @@ async function decryptSections(
 
 function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
+/**
+ * Translate a stored `Finding.classification` (Prisma enum, currently
+ * GAGAS-shaped: MINOR / SIGNIFICANT / MATERIAL / CRITICAL) into the
+ * target pack's classification vocabulary by severity tier. The Prisma
+ * enum's tiers are 1-4 (MINOR=1 … CRITICAL=4); the target pack's
+ * `findingClassifications` declare their own labels at the same severity
+ * tiers (IIA: LOW=1, MEDIUM=2, HIGH=3, CRITICAL=4).
+ *
+ * Without this translation the report header would embed GAGAS labels
+ * inside an IIA-attesting report — the architectural-risk smoke alarm
+ * Gemini surfaced in W2 review. See ADR-0010 for the canonical-data-flow
+ * thesis this preserves.
+ *
+ * If the target pack declares no classification at the matching severity,
+ * falls back to the storage value (a fail-safe; no good answer exists if
+ * the target pack's vocabulary is incomplete).
+ */
+const PRISMA_CLASSIFICATION_SEVERITY: Record<string, number> = {
+  MINOR: 1,
+  SIGNIFICANT: 2,
+  MATERIAL: 3,
+  CRITICAL: 4,
+};
+
+function translateClassificationToPack(
+  storedClassification: string,
+  targetPackContent: PackContent,
+): string {
+  const severity = PRISMA_CLASSIFICATION_SEVERITY[storedClassification];
+  if (severity === undefined) return storedClassification;
+  const targetClassifications =
+    (targetPackContent as { findingClassifications?: { code: string; severity: number }[] })
+      .findingClassifications ?? [];
+  const match = targetClassifications.find((c) => c.severity === severity);
+  return match?.code ?? storedClassification;
 }
 
 /**

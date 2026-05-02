@@ -1212,6 +1212,104 @@ describe("finding router — canonical key contract (slice B W2.1)", () => {
     });
     expect(submitted.status).toBe("IN_REVIEW");
   });
+
+  it("updateElement: optimistic-concurrency conflict is detected at the DB layer (Gemini W2 review catch #2)", async () => {
+    // Ensures `updateMany where { id, version }` fires a clean CONFLICT
+    // when something else (the W1 migration script or a concurrent autosave)
+    // bumped the version between our read and write.
+    const { services, prisma } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const eng = await caller.engagement.create({
+      name: "concurrency",
+      auditeeName: "RaceCo",
+      fiscalPeriod: "FY27",
+      periodStart: new Date("2027-01-01"),
+      periodEnd: new Date("2027-12-31"),
+      leadUserId: userId,
+    });
+    await caller.pack.attach({
+      engagementId: eng.id,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+    const finding = await caller.finding.create({
+      engagementId: eng.id,
+      title: "Race",
+      initialElements: { CRITERIA: LONG },
+    });
+    // Simulate a concurrent writer bumping the version (e.g., the W1
+    // migration script flipping elementsCanonicalized + re-encrypting
+    // mid-autosave). After this, the API's pending updateElement should
+    // hit a CONFLICT, not silently overwrite.
+    await prisma.finding.update({
+      where: { id: finding.id },
+      data: { version: { increment: 1 } },
+    });
+    await expect(
+      caller.finding.updateElement({
+        id: finding.id,
+        expectedVersion: finding.version,
+        elementCode: "CONDITION",
+        value: LONG,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("get: legacy pack-keyed storage is normalized to canonical on read (Gemini W2 review catch #4)", async () => {
+    // Slice-A-shaped finding: `elementsCanonicalized=false`, payload keys
+    // are pack-element-codes. The API's `get` procedure must translate to
+    // canonical before returning so slice-B-native UI clients see a
+    // consistent shape regardless of storage state.
+    const { services, prisma } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    // Build the engagement via the API (so EngagementStrictness exists),
+    // then create a synthetic legacy finding directly via Prisma — the
+    // API normally writes canonical, so we have to simulate.
+    const eng = await caller.engagement.create({
+      name: "legacy-read",
+      auditeeName: "LegacyCo",
+      fiscalPeriod: "FY27",
+      periodStart: new Date("2027-01-01"),
+      periodEnd: new Date("2027-12-31"),
+      leadUserId: userId,
+    });
+    await caller.pack.attach({
+      engagementId: eng.id,
+      packCode: "IIA-GIAS",
+      packVersion: "2024.1",
+    });
+
+    // Synthetic legacy storage: pack-element-codes from IIA (ROOT_CAUSE,
+    // CONSEQUENCE) — the kind of payload an unmigrated slice-A finding on
+    // an IIA engagement would carry.
+    const legacyValues = {
+      CRITERIA: LONG,
+      CONDITION: LONG,
+      ROOT_CAUSE: LONG,
+      CONSEQUENCE: LONG,
+    };
+    const legacyCipher = await services.encryption.encryptJson(tenantId, legacyValues);
+    const legacy = await prisma.finding.create({
+      data: {
+        tenantId,
+        engagementId: eng.id,
+        findingNumber: "F-LEGACY-001",
+        title: "Legacy finding",
+        authorId: userId,
+        elementValuesCipher: legacyCipher,
+        elementsCanonicalized: false, // pre-W1 migration shape
+        elementsComplete: 4,
+      },
+    });
+
+    const fetched = await caller.finding.get({ id: legacy.id });
+    // Storage was pack-keyed (ROOT_CAUSE, CONSEQUENCE); the API normalizes
+    // to canonical (CAUSE, EFFECT) on the read path.
+    const keys = Object.keys(fetched.elementValues).sort();
+    expect(keys).toEqual(["CAUSE", "CONDITION", "CRITERIA", "EFFECT"]);
+    expect(fetched.elementValues["CAUSE"]).toBe(LONG);
+    expect(fetched.elementValues["EFFECT"]).toBe(LONG);
+  });
 });
 
 describe("report router", () => {
@@ -1895,6 +1993,37 @@ describe("report router — cross-pack rendering (slice B W2.5)", () => {
     expect(compliance.sentence).toMatch(
       /IIA Global Internal Audit Standards 2024.*additional methodologies attached and conformance-claimed:.*GAGAS 2024/,
     );
+  });
+
+  it("classification taxonomy is translated through the target pack (Gemini W2 review catch #1)", async () => {
+    // Prisma enum stores GAGAS-shaped classification values
+    // (MINOR=1, SIGNIFICANT=2, MATERIAL=3, CRITICAL=4). When rendered
+    // under IIA, the section header should show IIA's vocabulary at the
+    // same severity tier (LOW / MEDIUM / HIGH / CRITICAL).
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const { engagementId } = await setupMultiPackWithFinding("classify-translate");
+
+    // The setup helper creates a finding with default SIGNIFICANT
+    // classification (severity tier 2). IIA's tier 2 = MEDIUM.
+    const iiaReport = await caller.report.create({
+      engagementId,
+      title: "IIA report — classification translation",
+      attestsToPackCode: "IIA-GIAS",
+      attestsToPackVersion: "2024.1",
+    });
+    const summary = iiaReport.sections["findings_summary"]?.content ?? "";
+    expect(summary).toContain("[MEDIUM]");
+    expect(summary).not.toContain("[SIGNIFICANT]");
+
+    // GAGAS report on the same engagement keeps GAGAS labels.
+    const gagasReport = await caller.report.create({
+      engagementId,
+      title: "GAGAS report — classification translation",
+      attestsToPackCode: "GAGAS",
+      attestsToPackVersion: "2024.1",
+    });
+    expect(gagasReport.sections["findings_summary"]?.content).toContain("[SIGNIFICANT]");
   });
 
   it("rejects attestsTo for a pack not attached to the engagement", async () => {

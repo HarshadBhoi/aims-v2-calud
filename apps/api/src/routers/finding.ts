@@ -139,11 +139,28 @@ export const findingRouter = router({
       if (!finding) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Finding not found." });
       }
-      const elements = await decryptElements(
+      const stored = await decryptElements(
         ctx.services.encryption,
         ctx.session.tenantId,
         finding.elementValuesCipher,
       );
+      // Always return canonical-keyed elements to the client. Legacy
+      // findings (`elementsCanonicalized=false`, pre-W1.4-7 migration)
+      // are stored in pack-codes; we normalize to canonical on the read
+      // path so slice-B-native UI clients see a consistent shape
+      // regardless of storage state. Without this, an unmigrated finding
+      // returns pack-keyed data the UI would interpret as empty slots,
+      // and the next autosave would clobber the legacy storage with
+      // partial pack-keyed data.
+      let elements = stored;
+      if (!finding.elementsCanonicalized && Object.keys(stored).length > 0) {
+        const { mergedMappingsContent } = await loadCanonicalContext(
+          ctx.services.prismaTenant,
+          finding.engagementId,
+        );
+        const { normalized } = normalizeToCanonical(stored, mergedMappingsContent);
+        elements = normalized;
+      }
       return toDetail(finding, elements);
     }),
 
@@ -252,13 +269,32 @@ export const findingRouter = router({
         nextStored,
       );
 
-      const updated = await ctx.services.prismaTenant.finding.update({
-        where: { id: input.id },
+      // Atomic optimistic-concurrency guard: the W1 migration script can
+      // flip `elementsCanonicalized` (and re-encrypt the cipher) on a
+      // legacy finding concurrently with this autosave. If we did a bare
+      // `update where id=…`, our pack-keyed write would silently clobber
+      // the migration's canonical-keyed write — leaving the row in a
+      // corrupt state where the flag says canonical but storage is pack.
+      // Use `updateMany where { id, version }` so the DB enforces the
+      // version match and we can detect the conflict.
+      const result = await ctx.services.prismaTenant.finding.updateMany({
+        where: { id: input.id, version: current.version },
         data: {
           elementValuesCipher: cipher,
           elementsComplete,
           version: { increment: 1 },
         },
+      });
+      if (result.count !== 1) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            `Finding ${input.id} was modified concurrently (expected version ` +
+            `${current.version.toString()}). Refresh and retry.`,
+        });
+      }
+      const updated = await ctx.services.prismaTenant.finding.findUniqueOrThrow({
+        where: { id: input.id },
       });
 
       return toDetail(updated, nextStored);
