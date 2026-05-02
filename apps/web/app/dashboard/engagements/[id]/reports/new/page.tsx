@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type SyntheticEvent } from "react";
 
 import {
   Alert,
@@ -42,10 +42,8 @@ export default function NewReportPage() {
     }
     const primary = attached.data.find((a) => a.isPrimary);
     if (primary) return `${primary.packCode}:${primary.packVersion}`;
-    if (attached.data.length > 0) {
-      const first = attached.data[0]!;
-      return `${first.packCode}:${first.packVersion}`;
-    }
+    const first = attached.data[0];
+    if (first) return `${first.packCode}:${first.packVersion}`;
     return null;
   }, [attached.data, queryParamPack]);
 
@@ -66,7 +64,7 @@ export default function NewReportPage() {
     },
   });
 
-  const handleSubmit = (e: React.FormEvent): void => {
+  const handleSubmit = (e: SyntheticEvent): void => {
     e.preventDefault();
     if (!attestsTo) return;
     const [packCode, packVersion] = attestsTo.split(":");

@@ -2420,6 +2420,55 @@ describe("auditLog router", () => {
     expect(result.totalRows).toBeGreaterThan(0n);
   });
 
+  it("strictness changes appear in audit log via the engagement_strictness trigger (W3 day 4-5)", async () => {
+    // Per slice plan §3.3 + ADR-0011 phase 5: every resolver re-run lands
+    // a hash-chained row in audit.audit_log. The trigger added in
+    // 20260502120000_audit_log_trigger_strictness fires on
+    // engagement_strictness mutations; the audit-log viewer's
+    // "Strictness changes" filter chip surfaces them.
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+
+    const eng = await caller.engagement.create({
+      name: "audit-log-strictness",
+      auditeeName: "AuditCo",
+      fiscalPeriod: "FY27",
+      periodStart: new Date("2027-01-01"),
+      periodEnd: new Date("2027-12-31"),
+      leadUserId: userId,
+    });
+    // Attach the first pack — resolver writes a fresh strictness row.
+    await caller.pack.attach({
+      engagementId: eng.id,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+    // Attach a second pack — resolver re-runs (idempotent overwrite),
+    // bumping the strictness row's version.
+    await caller.pack.attach({
+      engagementId: eng.id,
+      packCode: "IIA-GIAS",
+      packVersion: "2024.1",
+    });
+
+    // Audit log filtered by entityType=engagement_strictness should show
+    // at least 2 rows for this engagement (1 CREATE on first attach,
+    // 1 UPDATE on second attach).
+    const filtered = await caller.auditLog.list({
+      limit: 50,
+      entityType: "engagement_strictness",
+    });
+    const forThisEngagement = filtered.items.filter((entry) => {
+      const after = entry.afterData as { engagementId?: string } | null;
+      return after?.engagementId === eng.id;
+    });
+    expect(forThisEngagement.length).toBeGreaterThanOrEqual(2);
+    const actions = new Set(forThisEngagement.map((e) => e.action));
+    // First attach → CREATE; second attach → UPDATE.
+    expect(actions.has("CREATE")).toBe(true);
+    expect(actions.has("UPDATE")).toBe(true);
+  });
+
   // Note: a "verifyChain detects tampering" test would require a connection
   // that reliably bypasses the FORCE RLS on audit.audit_log to UPDATE a
   // foreign-tenant row through Prisma. The worker's `contentHash` check

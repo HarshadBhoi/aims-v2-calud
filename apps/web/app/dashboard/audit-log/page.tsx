@@ -12,10 +12,43 @@ import {
 } from "@/src/components/ui";
 import { trpc } from "@/src/lib/trpc";
 
+/**
+ * Slice B W3.4-5: curated filter chips for the audit-log viewer.
+ *
+ * The audit log's `entityType` column reflects the underlying SQL table
+ * name (so trigger-driven entries from `public.engagement_strictness`
+ * show up as `entityType = "engagement_strictness"`, etc.). The chips
+ * below give auditors quick access to the entity types Slice B's
+ * multi-pack work introduces — "Strictness changes" surfaces every
+ * resolver re-run via the trigger added in migration 20260502120000.
+ *
+ * `null` chip value = no filter (show everything).
+ */
+const FILTER_CHIPS: { label: string; entityType: string | null }[] = [
+  { label: "All", entityType: null },
+  { label: "Engagements", entityType: "engagements" },
+  { label: "Pack attachments", entityType: "pack_attachments" },
+  { label: "Strictness changes", entityType: "engagement_strictness" },
+  { label: "Findings", entityType: "findings" },
+  { label: "Approvals", entityType: "approval_requests" },
+  { label: "Reports", entityType: "reports" },
+  { label: "Report versions", entityType: "report_versions" },
+];
+
 export default function AuditLogPage() {
   const search = useSearchParams();
-  const entityType = search.get("entityType") ?? undefined;
-  const entityId = search.get("entityId") ?? undefined;
+  const queryEntityType = search.get("entityType");
+  const queryEntityId = search.get("entityId") ?? undefined;
+
+  // The query-string filter (used by deep links from engagement / finding /
+  // report detail pages) wins on initial render; the chip selector overrides
+  // when the user clicks one. `entityId` only ever comes from the query
+  // string — the chips don't pin to a specific entity id.
+  const [chipEntityType, setChipEntityType] = useState<string | null>(
+    queryEntityType,
+  );
+  const entityType = chipEntityType ?? undefined;
+  const entityId = queryEntityType !== null ? queryEntityId : undefined;
 
   const [cursor, setCursor] = useState<string | null>(null);
   const [pages, setPages] = useState<string[]>([]);
@@ -53,16 +86,35 @@ export default function AuditLogPage() {
         </Button>
       </div>
 
-      {entityType ?? entityId ? (
+      <div className="flex flex-wrap gap-2">
+        {FILTER_CHIPS.map((chip) => {
+          const active = chipEntityType === chip.entityType;
+          return (
+            <button
+              key={chip.label}
+              type="button"
+              onClick={() => {
+                setChipEntityType(chip.entityType);
+                setCursor(null);
+                setPages([]);
+              }}
+              className={
+                active
+                  ? "inline-flex items-center rounded-full bg-[var(--color-primary)] px-3 py-1 text-xs font-medium text-white"
+                  : "inline-flex items-center rounded-full bg-black/5 px-3 py-1 text-xs font-medium text-black/70 hover:bg-black/10"
+              }
+            >
+              {chip.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {entityId ? (
         <Alert tone="info">
-          Filtered to{" "}
-          {entityType ? (
-            <code className="font-mono text-xs">{entityType}</code>
-          ) : null}
-          {entityType && entityId ? " · " : null}
-          {entityId ? (
-            <code className="font-mono text-xs">{entityId}</code>
-          ) : null}
+          Filtered to a specific record:{" "}
+          <code className="font-mono text-xs">{entityType}</code>{" / "}
+          <code className="font-mono text-xs">{entityId}</code>
         </Alert>
       ) : null}
 
