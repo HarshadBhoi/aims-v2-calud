@@ -86,7 +86,14 @@ function sha256Canonical(value: unknown): string {
 
 // eslint-disable-next-line import/no-default-export -- Playwright globalSetup contract requires default export
 export default async function globalSetup(): Promise<void> {
-  const prisma = createAdminPrismaClient();
+  // Use the migration role for admin operations (TRUNCATE across schemas,
+  // RLS bypass for cross-tenant seed). Falls back to DATABASE_URL if the
+  // admin URL isn't set, but in that case the e2e setup will fail with
+  // permission-denied — which is the correct signal.
+  const adminUrl = process.env.DATABASE_ADMIN_URL ?? process.env.DATABASE_URL;
+  const prisma = createAdminPrismaClient({
+    datasourceUrl: adminUrl,
+  });
   const kmsClient = new KMSClient({
     endpoint: AWS_ENDPOINT_URL,
     region: AWS_REGION,
