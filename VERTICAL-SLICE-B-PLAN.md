@@ -1,6 +1,6 @@
 # AIMS v2 — Vertical Slice Plan (Slice B: Multi-Standard Rendering)
 
-**Status**: Draft (rev 2, post-Gemini review) · 2026-05-01
+**Status**: Draft (rev 3, post-Gemini delta-review) · 2026-05-01
 **Purpose**: Retire the central architectural risk Slice A deliberately deferred — that *the same finding renders correctly under two methodologies' vocabularies, driven by data, not branched code*. If this fails, "multi-standard" is marketing, not architecture.
 
 This is a narrower slice than A. Substrate, auth, finding loop, report+PDF, OTel, audit log, e2e harness — all already proven in [`VERTICAL-SLICE-PLAN.md`](VERTICAL-SLICE-PLAN.md). Slice B reuses every layer; the new code is concentrated in the pack resolver, the cross-pack renderer, and the multi-report path.
@@ -111,24 +111,31 @@ Same two state machines as Slice A (finding approve, report sign), unchanged. Ne
 
 ### Week 1 — Resolver + storage migration
 
-W1 is the heaviest week; all of Slice B's foundational data-shape work lands here. The encrypted-migration in particular is *not* a one-shot script — it threads through ALE per ADR-0001 and needs careful atomicity.
+W1 is the heaviest week; all of Slice B's foundational data-shape work lands here. The encrypted-migration in particular is *not* a one-shot script — it threads through ALE per ADR-0001 and needs careful atomicity, including a resumable execution model for partial-tenant failures and KMS timeouts (cryptographic data migrations almost always surface these edge cases late, so the budget below treats it as a 4-day deliverable rather than a 3-day one).
 
-- **Day 1** — Schema + RLS for `EngagementStrictness` (per ADR-0011 rollout phases 1-2): Prisma model, tenant-extension scoping, Prisma migration, RLS policy mirroring `Engagement`'s pattern, integration test for cross-tenant denial.
-- **Day 2-3** — Resolver write path: extend `resolvePackRequirements` to handle ≥1 pack with strictness direction (`max` / `min` / `union` / `override_required`); drop the `NOT_IMPLEMENTED` branch; rename to `resolveAndPersist`; wrap `pack.attach`/`pack.detach` in a transaction with the strictness write. Property test that `resolve([A,B])` and `resolve([B,A])` produce equal rows (order-independence) and that `primaryMethodology` dominates ties.
-- **Day 4-6** — `Finding.elementValuesCipher` migration script (per ADR-0010 rollout phase 1): per-tenant DEK loop, per-finding atomic transaction (decrypt → translate → re-encrypt → version-bump), dry-run mode, idempotent (running twice on a fresh tenant doesn't corrupt), inverse-mapping rollback path tested against slice-A seed, KMS-call rate-limit awareness (batch DEK unwrap once per tenant rather than per finding). Integration test: run on slice-A seed, verify all 50 seed findings round-trip through `finding.update` cleanly.
-- **Day 7** — API contract update (per ADR-0010 rollout phase 2): `finding.create` and `finding.updateElement` accept either pack-element-codes or canonical codes; server normalizes to canonical; deprecation warning logged on pack-code submission. `engagement.strictness` tRPC procedure (read-only, returns the persisted row + drivenBy trail).
+- **Day 1** — Schema + RLS for `EngagementStrictness` (per ADR-0011 rollout phases 1-2): Prisma model, tenant-extension scoping, Prisma migration, RLS policy mirroring `Engagement`'s pattern, integration test for cross-tenant denial. Also: implement `pack.swapPrimary({ from, to })` per ADR-0011's primary-methodology lifecycle policy (rejects `pack.detach` of a primary without a same-transaction replacement).
+- **Day 2-3** — Resolver write path: extend `resolvePackRequirements` to handle ≥1 pack with strictness direction (`max` / `min` / `union` / `override_required`); drop the `NOT_IMPLEMENTED` branch; rename to `resolveAndPersist`; wrap `pack.attach`/`pack.detach`/`pack.swapPrimary` in a transaction with the strictness write. Property test that `resolve([A,B])` and `resolve([B,A])` produce equal rows (order-independence) and that `primaryMethodology` dominates ties.
+- **Day 4-7** — `Finding.elementValuesCipher` migration script (per ADR-0010 rollout phase 1). Treat this as the riskiest deliverable in Slice B; the budget reflects that.
+  - Day 4: per-tenant DEK loop, per-finding atomic transaction (decrypt → translate → re-encrypt → version-bump), dry-run mode.
+  - Day 5: resumable execution model — checkpoint per (tenant, finding-id-cursor), resume from checkpoint on KMS timeout or partial failure, idempotent rerun, observable progress (OTel span per tenant).
+  - Day 6: KMS-call rate-limit awareness (batch DEK unwrap once per tenant rather than per finding), backoff + retry on KMS throttling, surfacing of unrecoverable errors with tenant + finding-id for human triage.
+  - Day 7: inverse-mapping rollback path tested against slice-A seed (lossless for the `exact`-only seed mappings); integration test running on slice-A seed end-to-end, all 50 seed findings round-trip through `finding.update` cleanly; staged-rollout dry-run against the dev DB before any "real" run.
 
-**Exit W1**: Multi-pack attach works; strictness rows persist with correct drivenBy across order permutations; all slice-A findings have been atomically migrated to canonical-code storage and the slice-A e2e still passes; `finding.create` accepts canonical codes alongside pack codes during the transition window.
+**Exit W1**: Multi-pack attach + primary swap work; strictness rows persist with correct drivenBy across order permutations; all slice-A findings have been atomically migrated to canonical-code storage with checkpointed resume verified; the slice-A e2e still passes against the migrated data.
+
+**Pushed to W2 day 1 (was W1 day 7)**: API contract update for `finding.create` / `finding.updateElement` accepting either pack-element-codes or canonical codes; the `engagement.strictness` tRPC procedure. The migration earned the breathing room.
 
 **W1 explicit non-goals**: cross-pack rendering (W2), multi-report UI (W3), annotation overlays (W3). Don't drift.
 
 ### Week 2 — Cross-pack rendering
 
-- Build `packages/pack-renderer/` (this *is* a second consumer, so per slice-A delta `3.1` it earns extraction): given a finding (canonical-code-keyed) and a target pack, produce an `Array<{ label, value, source }>` for the renderer to lay out.
-- `equivalenceStrength` honored: `exact` renders verbatim; `close` renders with a `(rendered under X mapping)` footer note; `partial` renders the fallback text from the target pack's `findingElements[i].fallbackPrompt` (new pack-schema field) and surfaces a warning event.
-- Wire the worker's pdfkit renderer through `pack-renderer` instead of reading finding values directly.
-- `report.compliance` procedure + the auto-assembly logic.
-- Integration tests: GAGAS finding → IIA render, IIA finding → GAGAS render, finding with one missing canonical code → fallback path.
+W2 absorbs the API contract update bumped from W1 day 7, so the calendar runs tight. If W2 starts to slip, the cascade target is `report.compliance` auto-assembly (push to W3) before any of the rendering work — the renderer is the architectural-risk surface; compliance-statement assembly is mechanical.
+
+- **Day 1** — API contract update bumped from W1: `finding.create` and `finding.updateElement` accept either pack-element-codes or canonical codes; server normalizes to canonical; deprecation warning logged on pack-code submission. `engagement.strictness` tRPC procedure (read-only, returns the persisted row + drivenBy trail).
+- **Day 2-4** — Build `packages/pack-renderer/` (this *is* a second consumer, so per slice-A delta `3.1` it earns extraction): given a finding (canonical-code-keyed) and a target pack, produce an `Array<{ label, value, source }>` for the renderer to lay out.
+- **Day 3-4** (overlapping) — `equivalenceStrength` honored: `exact` renders verbatim; `close` renders with a `(rendered under {sourcePack} mapping)` footer note; `partial` renders the fallback text from the target pack's `findingElements[i].fallbackPrompt` (new pack-schema field) and surfaces a warning event.
+- **Day 5** — Wire the worker's pdfkit renderer through `pack-renderer` instead of reading finding values directly.
+- **Day 6-7** — `report.compliance` procedure + the auto-assembly logic. Integration tests: GAGAS finding → IIA render, IIA finding → GAGAS render, finding with one missing canonical code → fallback path.
 
 **Exit W2**: Single finding renders into two distinct PDFs in S3; both download via presigned URLs; content hashes diverge.
 
@@ -271,4 +278,4 @@ Carries forward Slice A's deferral list. New items surfaced by Slice B's scoping
 
 ---
 
-*Draft revised 2026-05-01 against Gemini's external review. The §10 gates are pinned; W1 starts when you're ready.*
+*Draft revised 2026-05-01 (rev 3) against Gemini's delta-review of the rev-2 revision. ADR-0010 amended to drop the misleading re-translation bullet; ADR-0011 amended with explicit primary-methodology detach lifecycle (`pack.swapPrimary` is the supported affordance). W1 migration re-budgeted as 4 days with a resumable execution model; API contract update pushed to W2 day 1 with the cascade-risk surface named. The §10 gates are pinned; W1 starts when you're ready.*

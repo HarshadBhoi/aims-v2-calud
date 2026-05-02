@@ -29,6 +29,13 @@ A decision is needed before Slice B W1 since the resolver's persistence shape dr
 
 The resolver re-runs (and overwrites) on `pack.attach`, `pack.detach`, and `pack.upgrade` (future). Each re-run emits a `strictness.resolved` audit-log event capturing the diff from prior values. The current row is the source of truth; history lives in the audit log, not in the table.
 
+**Primary-methodology lifecycle.** The slice plan's invariant is "exactly one `primaryMethodology` per engagement at all times." Two transitions need explicit handling:
+
+1. **Detaching the primary while at least one finding exists.** `pack.detach` of the engagement's current primary methodology is **rejected** unless the same transaction also attaches a replacement primary. The supported affordance is a single `pack.swapPrimary({ from, to })` operation that detaches the current primary and attaches a new one inside one transaction; the resolver re-runs once at the end against the new pack set. Alternative attempted-detach paths return `PRECONDITION_FAILED` with a message naming the swap operation.
+2. **Detaching the primary on an engagement with no findings yet.** Treated identically — the invariant is structural, not data-driven. Promoting "the first additional methodology" silently was considered and rejected as too implicit; an audit trail with an explicit user intent is preferable.
+
+Stored finding data is unaffected by these transitions because storage is canonical-keyed per ADR-0010 — what changes is the write-path translation table for *future* `finding.create` submissions and the editor's label-resolution source. A primary swap therefore touches the engagement's pack-attachment graph, the strictness row, and the editor's pack reference, but never decrypts an existing `elementValuesCipher`.
+
 Tenant-level *overrides* (a future feature) extend this via a sibling `EngagementStrictnessOverride` model — out of scope for Slice B but the table shape doesn't preclude it.
 
 ---

@@ -57,7 +57,7 @@ Translate on submit using the primary pack's `semanticElementMappings`. Store ca
 **Cons**
 - Slice A's existing findings need migration: decrypt → translate → re-encrypt, per finding, per tenant (per ADR-0001 the DEK is per-tenant, so the migration script is tenant-aware and KMS-call-bounded)
 - A pack with no mapping for a slot the user filled in (e.g., GAGAS doesn't map `RECOMMENDATION`; the user typed one anyway) has to either reject the submit, drop the value, or store it under a fallback code — needs an explicit policy
-- A multi-pack engagement attached *after* a finding is authored can require re-translation if the primary pack changes; we accept this is rare and handled via a re-resolve on `pack.attach`
+- The write-path is implicitly coupled to "which pack is currently primary": a `finding.create` against engagement E uses E's *current* primary methodology's mappings to canonicalize. Stored data is unaffected by primary changes (canonical keys are pack-agnostic), but the lifecycle of *which pack is primary* needs explicit transition semantics — see ADR-0011's primary-methodology detach policy
 
 ### Option C — Dual store (rejected)
 
