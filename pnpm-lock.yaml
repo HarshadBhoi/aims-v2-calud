@@ -80,6 +80,9 @@ importers:
       '@aims/encryption':
         specifier: workspace:*
         version: link:../../packages/encryption
+      '@aims/pack-renderer':
+        specifier: workspace:*
+        version: link:../../packages/pack-renderer
       '@aims/prisma-client':
         specifier: workspace:*
         version: link:../../packages/prisma-client

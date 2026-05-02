@@ -43,6 +43,13 @@ export const CreateReportInput = z.object({
   engagementId: CuidString,
   title: z.string().min(1).max(500),
   templateKey: z.string().min(1).max(64).optional(),
+  /**
+   * Slice B (per VERTICAL-SLICE-B-PLAN §3.1): the pack this report attests
+   * to. Must be one of the engagement's attached packs. Defaults to the
+   * engagement's primary methodology when omitted.
+   */
+  attestsToPackCode: z.string().min(1).max(64).optional(),
+  attestsToPackVersion: z.string().min(1).max(32).optional(),
 });
 export type CreateReportInput = z.infer<typeof CreateReportInput>;
 

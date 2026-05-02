@@ -105,6 +105,7 @@ model StandardPack {
   contentHash String
 
   attachments PackAttachment[]
+  attestedReports Report[] @relation("ReportAttestsTo")
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
@@ -503,6 +504,16 @@ model Report {
 
   templateKey String // e.g., "engagement-report-v1"
   title       String
+
+  /// Slice B (per VERTICAL-SLICE-B-PLAN §3.1 + ADR-0010): the pack this
+  /// report formally attests to. Drives cross-pack rendering — finding
+  /// element values (canonical-keyed in storage) are translated to this
+  /// pack's vocabulary via @aims/pack-renderer when sections regenerate.
+  /// Must be one of the engagement's attached packs. Slice A reports
+  /// backfill to the engagement's primary methodology in the migration.
+  attestsToPackCode    String
+  attestsToPackVersion String
+  attestsToPack        StandardPack @relation("ReportAttestsTo", fields: [attestsToPackCode, attestsToPackVersion], references: [code, version])
 
   status ReportStatus @default(DRAFT)
 

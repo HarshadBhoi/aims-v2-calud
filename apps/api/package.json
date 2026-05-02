@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@aims/encryption": "workspace:*",
+    "@aims/pack-renderer": "workspace:*",
     "@aims/prisma-client": "workspace:*",
     "@aims/validation": "workspace:*",
     "@aws-sdk/client-kms": "^3.658.0",

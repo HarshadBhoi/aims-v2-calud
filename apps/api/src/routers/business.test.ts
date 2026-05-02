@@ -1550,6 +1550,162 @@ describe("report router", () => {
   });
 });
 
+describe("report router — cross-pack rendering (slice B W2.5)", () => {
+  // Helper: an engagement with both GAGAS and IIA-GIAS attached, and one
+  // APPROVED finding filled with all 5 canonical codes (CRITERIA, CONDITION,
+  // CAUSE, EFFECT, RECOMMENDATION). The tests below produce two reports
+  // against the same engagement — one attesting to GAGAS, one to IIA — and
+  // verify the section text differs.
+  const FILLED = "x".repeat(60);
+
+  async function setupMultiPackWithFinding(
+    suffix: string,
+  ): Promise<{ engagementId: string; findingId: string }> {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const eng = await caller.engagement.create({
+      name: `slice-b-w25-${suffix}`,
+      auditeeName: "CrossPackCo",
+      fiscalPeriod: "FY27",
+      periodStart: new Date("2027-01-01"),
+      periodEnd: new Date("2027-12-31"),
+      leadUserId: userId,
+    });
+    await caller.pack.attach({
+      engagementId: eng.id,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+    await caller.pack.attach({
+      engagementId: eng.id,
+      packCode: "IIA-GIAS",
+      packVersion: "2024.1",
+    });
+    const finding = await caller.finding.create({
+      engagementId: eng.id,
+      title: `Cross-pack finding ${suffix}`,
+      initialElements: {
+        CRITERIA: FILLED,
+        CONDITION: FILLED,
+        CAUSE: FILLED,
+        EFFECT: FILLED,
+        RECOMMENDATION: FILLED,
+      },
+    });
+    const submitted = await caller.finding.submitForReview({
+      id: finding.id,
+      expectedVersion: finding.version,
+    });
+    // Step up MFA so `decide` is callable.
+    const mfaCaller = appRouter.createCaller(
+      makeAuthedContext(services, {
+        mfaFreshUntil: new Date(Date.now() + 5 * 60 * 1000),
+      }),
+    );
+    await mfaCaller.finding.decide({
+      id: submitted.id,
+      expectedVersion: submitted.version,
+      decision: "APPROVED",
+      comment: "approved for slice-B cross-pack rendering test",
+    });
+    return { engagementId: eng.id, findingId: submitted.id };
+  }
+
+  it("report.create defaults attestsTo to the engagement's primary methodology (GAGAS)", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const { engagementId } = await setupMultiPackWithFinding("default-attests");
+
+    const created = await caller.report.create({
+      engagementId,
+      title: "GAGAS default report",
+    });
+    // No explicit attestsTo → defaults to primary (GAGAS). Section text uses
+    // GAGAS's labels (Criteria / Condition / Cause / Effect).
+    const summary = created.sections["findings_summary"]?.content ?? "";
+    expect(summary).toContain("Criteria:");
+    expect(summary).toContain("Cause:");
+    expect(summary).toContain("Effect:");
+    // GAGAS's pack-codes are canonical, so no close-mapping footers.
+    expect(summary).not.toContain("(rendered under");
+  });
+
+  it("report.create with attestsTo=IIA renders findings under IIA's vocabulary (Root Cause / Consequence)", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const { engagementId } = await setupMultiPackWithFinding("iia-attests");
+
+    const iiaReport = await caller.report.create({
+      engagementId,
+      title: "IIA report",
+      attestsToPackCode: "IIA-GIAS",
+      attestsToPackVersion: "2024.1",
+    });
+    const summary = iiaReport.sections["findings_summary"]?.content ?? "";
+    // IIA labels.
+    expect(summary).toContain("Root Cause:");
+    expect(summary).toContain("Consequence:");
+    expect(summary).toContain("Recommendation:");
+    // IIA's RECOMMENDATION mapping is `close` — footer note expected.
+    expect(summary).toMatch(/\(rendered under GAGAS:2024\.1 mapping\)/);
+  });
+
+  it("two reports on the same engagement with different attestsTo produce different section text + content hashes", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const { engagementId } = await setupMultiPackWithFinding("two-reports");
+
+    const gagas = await caller.report.create({
+      engagementId,
+      title: "GAGAS report",
+      attestsToPackCode: "GAGAS",
+      attestsToPackVersion: "2024.1",
+    });
+    const iia = await caller.report.create({
+      engagementId,
+      title: "IIA report",
+      attestsToPackCode: "IIA-GIAS",
+      attestsToPackVersion: "2024.1",
+    });
+
+    const gagasSummary = gagas.sections["findings_summary"]?.content ?? "";
+    const iiaSummary = iia.sections["findings_summary"]?.content ?? "";
+
+    // The same canonical-keyed finding renders structurally distinct text
+    // under each pack's vocabulary — slice B's central thesis exercised.
+    expect(gagasSummary).not.toBe(iiaSummary);
+    expect(gagasSummary).toContain("Cause:");
+    expect(iiaSummary).toContain("Root Cause:");
+  });
+
+  it("rejects attestsTo for a pack not attached to the engagement", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const eng = await caller.engagement.create({
+      name: "single-pack-eng",
+      auditeeName: "Co",
+      fiscalPeriod: "FY27",
+      periodStart: new Date("2027-01-01"),
+      periodEnd: new Date("2027-12-31"),
+      leadUserId: userId,
+    });
+    await caller.pack.attach({
+      engagementId: eng.id,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+    // IIA-GIAS isn't attached to this engagement.
+    await expect(
+      caller.report.create({
+        engagementId: eng.id,
+        title: "Should fail",
+        attestsToPackCode: "IIA-GIAS",
+        attestsToPackVersion: "2024.1",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+});
+
 describe("auditLog router", () => {
   it("list returns the most recent entries for the current tenant", async () => {
     const { services } = requireSetup();
@@ -1747,6 +1903,8 @@ describe("cross-tenant isolation sweep", () => {
         title: "Sibling Report",
         status: "PUBLISHED",
         authorId: siblingUser.id,
+        attestsToPackCode: "GAGAS",
+        attestsToPackVersion: "2024.1",
       },
     });
     await prisma.reportVersion.create({

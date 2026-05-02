@@ -23,6 +23,7 @@
  */
 
 import { type EncryptionModule } from "@aims/encryption";
+import { renderFindingForPack, type PackContent } from "@aims/pack-renderer";
 import {
   CreateReportInput,
   DownloadReportPdfInput,
@@ -62,6 +63,11 @@ const EDITORIAL_SECTION_KEYS = [
 
 export const reportRouter = router({
   // ─── create ─────────────────────────────────────────────────────────────
+  // Slice B (per VERTICAL-SLICE-B-PLAN §3.1 + ADR-0010): every report
+  // attests to a specific pack. The pack drives cross-pack rendering of
+  // finding elements via @aims/pack-renderer. When `attestsToPack*` is
+  // omitted, defaults to the engagement's primary methodology — preserves
+  // slice-A behavior (one pack per engagement → one report attesting to it).
   create: authenticatedProcedure
     .input(CreateReportInput)
     .mutation(async ({ ctx, input }): Promise<ReportDetail> => {
@@ -72,11 +78,19 @@ export const reportRouter = router({
         throw new TRPCError({ code: "NOT_FOUND", message: "Engagement not found." });
       }
 
+      const attestsTo = await resolveAttestsToPack(
+        ctx.services.prismaTenant,
+        input.engagementId,
+        input.attestsToPackCode,
+        input.attestsToPackVersion,
+      );
+
       const sections = await buildInitialSections(
         ctx.services.prismaTenant,
         ctx.services.encryption,
         ctx.session.tenantId,
         input.engagementId,
+        attestsTo,
       );
 
       const cipher = await ctx.services.encryption.encryptJson(
@@ -95,6 +109,8 @@ export const reportRouter = router({
               templateKey,
               title: input.title,
               authorId: ctx.session.userId,
+              attestsToPackCode: attestsTo.packCode,
+              attestsToPackVersion: attestsTo.packVersion,
             },
           });
           const v = await tx.reportVersion.create({
@@ -162,6 +178,10 @@ export const reportRouter = router({
         ctx.services.encryption,
         ctx.session.tenantId,
         report.engagementId,
+        {
+          packCode: report.attestsToPackCode,
+          packVersion: report.attestsToPackVersion,
+        },
       );
 
       // Preserve editorial content; replace data sections with fresh values.
@@ -422,11 +442,60 @@ function assertEditable(actual: ReportStatusInput, action: string): void {
 
 // ─── Section helpers ───────────────────────────────────────────────────────
 
+/**
+ * Resolves the pack a report attests to. When the caller doesn't supply
+ * `attestsToPackCode`/`attestsToPackVersion`, defaults to the engagement's
+ * primary methodology — slice-A behavior preservation. When the caller does
+ * supply them, validates that pack is actually attached to the engagement
+ * (a report can only attest to packs the engagement has formally attached).
+ */
+async function resolveAttestsToPack(
+  prisma: AuthedPrisma,
+  engagementId: string,
+  packCode: string | undefined,
+  packVersion: string | undefined,
+): Promise<{ packCode: string; packVersion: string }> {
+  if (packCode !== undefined && packVersion !== undefined) {
+    const attached = await prisma.packAttachment.findUnique({
+      where: {
+        engagementId_packCode_packVersion: {
+          engagementId,
+          packCode,
+          packVersion,
+        },
+      },
+    });
+    if (!attached) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          `Cannot attest to ${packCode}:${packVersion} — pack is not attached ` +
+          `to the engagement. Attach it via pack.attach first.`,
+      });
+    }
+    return { packCode, packVersion };
+  }
+  // Default: the engagement's primary methodology.
+  const primary = await prisma.packAttachment.findFirst({
+    where: { engagementId, isPrimary: true },
+  });
+  if (!primary) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Engagement has no primary methodology — attach one via pack.attach " +
+        "before creating reports.",
+    });
+  }
+  return { packCode: primary.packCode, packVersion: primary.packVersion };
+}
+
 async function buildInitialSections(
   prisma: AuthedPrisma,
   encryption: EncryptionModule,
   tenantId: string,
   engagementId: string,
+  attestsTo: { packCode: string; packVersion: string },
 ): Promise<ReportSectionsInput> {
   const engagement = await prisma.engagement.findUniqueOrThrow({
     where: { id: engagementId },
@@ -436,6 +505,18 @@ async function buildInitialSections(
     where: { engagementId },
     include: { pack: true },
   });
+
+  // Slice B (per ADR-0010 + W2 day 5): cross-pack rendering. Load the
+  // report's `attestsTo` pack content and the engagement's primary pack
+  // content; each finding's canonical-keyed elements are translated into
+  // the attestsTo pack's vocabulary via @aims/pack-renderer.
+  const attestsToPack = await prisma.standardPack.findUniqueOrThrow({
+    where: { code_version: { code: attestsTo.packCode, version: attestsTo.packVersion } },
+  });
+  const primaryAttachment = attachments.find((a) => a.isPrimary);
+  const sourcePack = primaryAttachment
+    ? { packCode: primaryAttachment.packCode, packVersion: primaryAttachment.packVersion }
+    : undefined;
 
   const approved = await prisma.finding.findMany({
     where: { engagementId, status: "APPROVED" },
@@ -450,7 +531,19 @@ async function buildInitialSections(
             Buffer.from(f.elementValuesCipher),
           )
         : {};
-      return { ...f, elements };
+      // Render each finding under the attestsTo pack's vocabulary. This is
+      // where the architectural-risk smoke alarm is silent — rendering is
+      // mapping-driven, no per-pack code branches anywhere.
+      const rendered = renderFindingForPack({
+        elementValues: elements,
+        targetPack: {
+          packCode: attestsTo.packCode,
+          packVersion: attestsTo.packVersion,
+          content: attestsToPack.packContent as PackContent,
+        },
+        ...(sourcePack !== undefined ? { sourcePack } : {}),
+      });
+      return { ...f, rendered };
     }),
   );
 
@@ -466,30 +559,41 @@ async function buildInitialSections(
     },
     pack_disclosure: {
       kind: "data",
-      content:
-        attachments.length > 0
-          ? attachments
+      content: [
+        `Attests to: ${attestsToPack.name} (${attestsTo.packCode}:${attestsTo.packVersion}) — ${attestsToPack.issuingBody}`,
+        attachments.length > 1
+          ? `Additional methodologies attached:\n${attachments
+              .filter(
+                (a) =>
+                  !(
+                    a.packCode === attestsTo.packCode &&
+                    a.packVersion === attestsTo.packVersion
+                  ),
+              )
               .map(
                 (a) =>
-                  `${a.pack.name} (${a.packCode}:${a.packVersion}) — ${a.pack.issuingBody}`,
+                  `  • ${a.pack.name} (${a.packCode}:${a.packVersion}) — ${a.pack.issuingBody}`,
               )
-              .join("\n")
-          : "No standard packs attached.",
+              .join("\n")}`
+          : "",
+      ]
+        .filter((line) => line.length > 0)
+        .join("\n"),
     },
     findings_summary: {
       kind: "data",
       content:
         decryptedFindings.length > 0
           ? decryptedFindings
-              .map((f) =>
-                [
-                  `${f.findingNumber} — ${f.title} [${f.classification}]`,
-                  ...Object.entries(f.elements).map(
-                    ([k, v]) =>
-                      `  ${k}: ${truncate(v, 200)}`,
-                  ),
-                ].join("\n"),
-              )
+              .map((f) => {
+                const header = `${f.findingNumber} — ${f.title} [${f.classification}]`;
+                const rows = f.rendered.rows.map((row) => {
+                  const footer = row.footerNote !== null ? `\n    ${row.footerNote}` : "";
+                  const value = row.value.length > 0 ? truncate(row.value, 200) : "(not provided)";
+                  return `  ${row.label}: ${value}${footer}`;
+                });
+                return [header, ...rows].join("\n");
+              })
               .join("\n\n")
           : "No approved findings.",
     },
@@ -565,6 +669,8 @@ type ReportRow = {
   title: string;
   status: ReportStatusInput;
   authorId: string;
+  attestsToPackCode: string;
+  attestsToPackVersion: string;
   version: number;
   createdAt: Date;
   updatedAt: Date;
