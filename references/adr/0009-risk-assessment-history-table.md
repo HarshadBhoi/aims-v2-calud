@@ -1,6 +1,6 @@
 # 0009 — Risk Assessment as a per-fiscal-year history table
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-04-28
 - **Deciders**: @HarshadBhoi
 - **Consulted**: v1 SPFx schema review (provision-aims.ps1), schema gap analysis 2026-04-28
@@ -160,4 +160,7 @@ Pre-launch — no data migration needed. v1 → v2 import path (future) maps `Cl
 <!--
 CHANGELOG:
 - 2026-04-28: Proposed by @HarshadBhoi following v1 → v2 schema gap analysis
+- 2026-05-01: Accepted by @HarshadBhoi — schema landed in `database/schema.prisma`,
+  snapshot-sync trigger pattern documented in `database/functions/`, no slice-A
+  regressions (97 integration tests passing)
 -->

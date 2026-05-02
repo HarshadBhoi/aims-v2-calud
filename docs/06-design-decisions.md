@@ -127,6 +127,30 @@ The resolver re-runs on any pack attach or detach; change events are logged. Thi
 
 **Where it lives**: `data-model/tenant-data-model.ts` (the `EngagementStrictness` interface and `drivenBy` trail), [03 §6.5](03-the-multi-standard-insight.md#65-strictness-resolver--union-or-max-of-rules-across-attached-packs).
 
+### 1.9 Control Matrix as a separate entity, optional FK from audit tests
+
+The Process-Risk-Control Matrix (PRCM) is a load-bearing artifact in internal audit, SOX 404, and ISO management-system audits — each row maps a process to a risk to a control, with attributes for type, nature, frequency, owner, effectiveness. Audit tests then *exercise* those controls.
+
+The initial v2 draft collapsed this into a row on `AuditTest` itself: `controlId`, `controlDescription`, `assertionTested`. That conflates two different lifecycle artifacts: *what controls exist and should be tested* (planning-phase, sometimes documents controls that won't be tested this engagement) versus *what was tested and what we found* (fieldwork-phase, owned by the auditor). Collapsing them makes "untested but documented" controls inexpressible, duplicates control attributes when one control gets both a TOD and a TOE, and prevents control-coverage reporting.
+
+`ControlMatrix` is a separate engagement-scoped table; `AuditTest.controlMatrixId` is an *optional* FK so that substantive-only engagements with no upstream PRCM pay nothing. Pack-specific control attributes (COSO 2013 component, ISO 27001 Annex A clause) live in `customAttributes` JSONB; canonical attributes (type, nature, frequency, effectiveness) are first-class for indexing and reports. The matrix row carries its own status — `DRAFT → ACTIVE → TESTED → CLOSED` — independent of the engagement and of any individual test.
+
+**Trade-off**: one more table to RLS-scope, write Prisma extension entries for, and migrate; a dual-source-of-truth between `AuditTest.controlId` (free-text, denormalized) and `AuditTest.controlMatrix.controlCode` (FK-referenced) that the API layer reconciles. Accepted because the alternative — collapsing — fails the domain on day one for any SOX or IIA shop.
+
+**Canonical record**: **[ADR-0008](../references/adr/0008-control-matrix-as-separate-model.md)** — full alternatives (collapse-into-AuditTest, JSONB-on-Engagement, pack-templates-only), validation criteria, and rollout phases. This narrative is the orientation; the ADR is the record.
+
+### 1.10 Risk Assessment as a per-fiscal-year history table
+
+Annual risk assessment of the audit universe is foundational — GAGAS §5.07, IIA Standard 9.4, ISO 19011 all require it, and audit committees ask year-over-year-trend questions of the platform ("did procurement's risk profile go up or down since last year, and why?"). The history is the deliverable.
+
+The initial v2 draft collapsed this into a JSONB `riskFactors` blob plus snapshot columns (`inherentRiskScore`, `residualRiskScore`, `lastRiskAssessment`) on `AuditUniverseEntity`. That captures *current* state but erases every prior year — trending becomes a forensic exercise (scrape PDFs, re-enter manually) rather than a query. It also flattens the dimension structure, losing schema enforcement and per-dimension indexing.
+
+`RiskAssessment` is a separate table, one row per (auditable entity, fiscal year). Pack-defined dimensions (GAGAS 5-dim, COSO ERM, ISO 31000) live in JSONB; denormalized `compositeScore` and `riskRating` are first-class for indexing and dashboards. Snapshot columns on `AuditUniverseEntity` stay — they are a fast-path cache for the most-recent assessment, kept in sync by a trigger that fires when an assessment transitions to a locked state. Approval flows through the existing polymorphic `Approval` table with `entityType = 'risk_assessment'`. Lock semantics match other planning artifacts: editable until approved, then immutable.
+
+**Trade-off**: two sources of truth for "current assessment" (the snapshot columns and the most-recent row), reconciled by trigger and accepted as the price of keeping the dashboard read fast. The `(entityId, fiscalYear)` unique constraint forecloses ad-hoc quarterly reassessments — if that pattern emerges as a real use case, the constraint becomes wrong and we add `assessmentDate` to the unique key (called out in the ADR's validation criteria).
+
+**Canonical record**: **[ADR-0009](../references/adr/0009-risk-assessment-history-table.md)** — full alternatives (JSONB-on-entity, bitemporal-on-entity, event-sourcing), validation criteria, rollout. This narrative is the orientation; the ADR is the record.
+
 ---
 
 ## Part 2 — Data and security foundation
