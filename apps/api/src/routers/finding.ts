@@ -328,12 +328,26 @@ export const findingRouter = router({
         });
       }
 
-      const [updated] = await ctx.services.prismaTenant.$transaction([
-        ctx.services.prismaTenant.finding.update({
-          where: { id: input.id },
+      // Per Gemini W2 round-2: use updateMany with version guard so the
+      // DB enforces the optimistic-concurrency check. A bare update would
+      // race with a concurrent updateElement that bumped the version (e.g.,
+      // a last-second autosave between this procedure's read and write
+      // could clear a required field but submitForReview would still
+      // transition to IN_REVIEW). Same pattern as updateElement at line 268.
+      const updated = await ctx.services.prismaTenant.$transaction(async (tx) => {
+        const result = await tx.finding.updateMany({
+          where: { id: input.id, version: current.version },
           data: { status: "IN_REVIEW", version: { increment: 1 } },
-        }),
-        ctx.services.prismaTenant.approvalRequest.create({
+        });
+        if (result.count !== 1) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              `Finding ${input.id} was modified concurrently (expected version ` +
+              `${current.version.toString()}). Refresh and retry.`,
+          });
+        }
+        await tx.approvalRequest.create({
           // @ts-expect-error — tenantId injected at runtime by our extension.
           data: {
             targetType: "finding",
@@ -342,8 +356,9 @@ export const findingRouter = router({
             status: "PENDING",
             requestedById: ctx.session.userId,
           },
-        }),
-      ]);
+        });
+        return tx.finding.findUniqueOrThrow({ where: { id: input.id } });
+      });
 
       const elements = await decryptElements(
         ctx.services.encryption,
@@ -386,12 +401,23 @@ export const findingRouter = router({
             ? "REJECTED"
             : "RETURNED";
 
-      const [updated] = await ctx.services.prismaTenant.$transaction([
-        ctx.services.prismaTenant.finding.update({
-          where: { id: input.id },
+      // Per Gemini W2 round-2: same race pattern as submitForReview/
+      // updateElement. updateMany with version guard inside an interactive
+      // transaction so the DB enforces optimistic concurrency.
+      const updated = await ctx.services.prismaTenant.$transaction(async (tx) => {
+        const result = await tx.finding.updateMany({
+          where: { id: input.id, version: current.version },
           data: { status: nextFindingStatus, version: { increment: 1 } },
-        }),
-        ctx.services.prismaTenant.approvalRequest.update({
+        });
+        if (result.count !== 1) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              `Finding ${input.id} was modified concurrently (expected version ` +
+              `${current.version.toString()}). Refresh and retry.`,
+          });
+        }
+        await tx.approvalRequest.update({
           where: { id: pending.id },
           data: {
             status: nextApprovalStatus,
@@ -401,8 +427,9 @@ export const findingRouter = router({
             approverId: ctx.session.userId,
             approverSessionId: ctx.session.sessionId,
           },
-        }),
-      ]);
+        });
+        return tx.finding.findUniqueOrThrow({ where: { id: input.id } });
+      });
 
       const elements = await decryptElements(
         ctx.services.encryption,

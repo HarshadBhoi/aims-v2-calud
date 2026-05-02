@@ -232,19 +232,29 @@ export const reportRouter = router({
         next,
       );
 
-      // Capture both updates from the transaction — avoids a third
-      // `findUniqueOrThrow` round-trip just to re-read the version row
-      // we just updated.
+      // Per Gemini W2 round-2: use updateMany with version guard so the DB
+      // enforces optimistic concurrency. A bare `update where id=…` would
+      // race with a concurrent updateEditorial autosave (W3 UI surface) —
+      // the contentCipher write would silently clobber the autosave.
       const [updatedReport, updatedVersion] = await ctx.services.prismaTenant.$transaction(
         async (tx) => {
-          const r = await tx.report.update({
-            where: { id: report.id },
+          const result = await tx.report.updateMany({
+            where: { id: report.id, version: report.version },
             data: { version: { increment: 1 } },
           });
+          if (result.count !== 1) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                `Report ${report.id} was modified concurrently (expected version ` +
+                `${report.version.toString()}). Refresh and retry.`,
+            });
+          }
           const v = await tx.reportVersion.update({
             where: { id: version.id },
             data: { contentCipher: cipher },
           });
+          const r = await tx.report.findUniqueOrThrow({ where: { id: report.id } });
           return [r, v] as const;
         },
       );
@@ -291,16 +301,29 @@ export const reportRouter = router({
         next,
       );
 
+      // Per Gemini W2 round-2: same race pattern as regenerateDataSections.
+      // updateMany with version guard so concurrent autosaves (W3 UI hits
+      // this on every keystroke pause) collide cleanly via CONFLICT
+      // rather than silently clobbering each other's contentCipher.
       const [updatedReport, updatedVersion] = await ctx.services.prismaTenant.$transaction(
         async (tx) => {
-          const r = await tx.report.update({
-            where: { id: report.id },
+          const result = await tx.report.updateMany({
+            where: { id: report.id, version: report.version },
             data: { version: { increment: 1 } },
           });
+          if (result.count !== 1) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                `Report ${report.id} was modified concurrently (expected version ` +
+                `${report.version.toString()}). Refresh and retry.`,
+            });
+          }
           const v = await tx.reportVersion.update({
             where: { id: version.id },
             data: { contentCipher: cipher },
           });
+          const r = await tx.report.findUniqueOrThrow({ where: { id: report.id } });
           return [r, v] as const;
         },
       );
@@ -335,9 +358,23 @@ export const reportRouter = router({
         }
       }
 
-      const updated = await ctx.services.prismaTenant.report.update({
-        where: { id: report.id },
+      // Per Gemini W2 round-2: updateMany + version guard. A bare update
+      // would race with a concurrent updateEditorial autosave that bumps
+      // the version after our editorial-completeness check above.
+      const result = await ctx.services.prismaTenant.report.updateMany({
+        where: { id: report.id, version: report.version },
         data: { status: "IN_REVIEW", version: { increment: 1 } },
+      });
+      if (result.count !== 1) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            `Report ${report.id} was modified concurrently (expected version ` +
+            `${report.version.toString()}). Refresh and retry.`,
+        });
+      }
+      const updated = await ctx.services.prismaTenant.report.findUniqueOrThrow({
+        where: { id: report.id },
       });
 
       return toDetail(updated, version, sections);
@@ -414,10 +451,23 @@ export const reportRouter = router({
 
       const [updatedReport, updatedVersion] = await ctx.services.prismaTenant.$transaction(
         async (tx) => {
-          const r = await tx.report.update({
-            where: { id: report.id },
+          // Per Gemini W2 round-2: updateMany + version guard so a
+          // concurrent updateEditorial that snuck in between the
+          // submitForSignoff and sign-off can't silently change the
+          // signed contentCipher's parent version.
+          const updResult = await tx.report.updateMany({
+            where: { id: report.id, version: report.version },
             data: { status: "PUBLISHED", version: { increment: 1 } },
           });
+          if (updResult.count !== 1) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                `Report ${report.id} was modified concurrently (expected version ` +
+                `${report.version.toString()}). Refresh and retry.`,
+            });
+          }
+          const r = await tx.report.findUniqueOrThrow({ where: { id: report.id } });
           const v = await tx.reportVersion.update({
             where: { id: version.id },
             data: {

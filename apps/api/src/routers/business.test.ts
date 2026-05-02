@@ -1255,6 +1255,94 @@ describe("finding router — canonical key contract (slice B W2.1)", () => {
     ).rejects.toMatchObject({ code: "CONFLICT" });
   });
 
+  it("submitForReview: optimistic-concurrency conflict at DB layer (Gemini W2 round-2 #2a)", async () => {
+    const { services, prisma } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const eng = await caller.engagement.create({
+      name: "submit-race",
+      auditeeName: "RaceCo",
+      fiscalPeriod: "FY27",
+      periodStart: new Date("2027-01-01"),
+      periodEnd: new Date("2027-12-31"),
+      leadUserId: userId,
+    });
+    await caller.pack.attach({
+      engagementId: eng.id,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+    const finding = await caller.finding.create({
+      engagementId: eng.id,
+      title: "Race",
+      initialElements: {
+        CRITERIA: LONG,
+        CONDITION: LONG,
+        CAUSE: LONG,
+        EFFECT: LONG,
+      },
+    });
+    // Simulate concurrent writer.
+    await prisma.finding.update({
+      where: { id: finding.id },
+      data: { version: { increment: 1 } },
+    });
+    await expect(
+      caller.finding.submitForReview({
+        id: finding.id,
+        expectedVersion: finding.version,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("decide: optimistic-concurrency conflict at DB layer (Gemini W2 round-2 #2a)", async () => {
+    const { services, prisma } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const fresh = appRouter.createCaller(
+      makeAuthedContext(services, {
+        mfaFreshUntil: new Date(Date.now() + 5 * 60 * 1000),
+      }),
+    );
+    const eng = await caller.engagement.create({
+      name: "decide-race",
+      auditeeName: "RaceCo",
+      fiscalPeriod: "FY27",
+      periodStart: new Date("2027-01-01"),
+      periodEnd: new Date("2027-12-31"),
+      leadUserId: userId,
+    });
+    await caller.pack.attach({
+      engagementId: eng.id,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+    const created = await caller.finding.create({
+      engagementId: eng.id,
+      title: "Decide race",
+      initialElements: {
+        CRITERIA: LONG,
+        CONDITION: LONG,
+        CAUSE: LONG,
+        EFFECT: LONG,
+      },
+    });
+    const submitted = await caller.finding.submitForReview({
+      id: created.id,
+      expectedVersion: created.version,
+    });
+    await prisma.finding.update({
+      where: { id: submitted.id },
+      data: { version: { increment: 1 } },
+    });
+    await expect(
+      fresh.finding.decide({
+        id: submitted.id,
+        expectedVersion: submitted.version,
+        decision: "APPROVED",
+        comment: "approved",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
   it("get: legacy pack-keyed storage is normalized to canonical on read (Gemini W2 review catch #4)", async () => {
     // Slice-A-shaped finding: `elementsCanonicalized=false`, payload keys
     // are pack-element-codes. The API's `get` procedure must translate to
@@ -1645,6 +1733,78 @@ describe("report router", () => {
     await expect(
       caller.report.downloadPdf({ id: created.id }),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
+  it("updateEditorial: optimistic-concurrency conflict at DB layer (Gemini W2 round-2 #4)", async () => {
+    // The W3 UI's autosave path will hit updateEditorial on every keystroke
+    // pause. Concurrent writes (e.g., autosave overlapping a manual save
+    // button click) must collide cleanly via CONFLICT, not silently
+    // clobber each other's contentCipher.
+    const { services, prisma } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const { engagementId } = await newEngagementWithApprovedFinding();
+
+    const created = await caller.report.create({
+      engagementId,
+      title: "Editorial race",
+    });
+    // Simulate a concurrent writer.
+    await prisma.report.update({
+      where: { id: created.id },
+      data: { version: { increment: 1 } },
+    });
+    await expect(
+      caller.report.updateEditorial({
+        id: created.id,
+        sectionKey: "executive_summary",
+        content: "Stale write",
+        expectedVersion: created.version,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("submitForSignoff: optimistic-concurrency conflict at DB layer (Gemini W2 round-2 #4)", async () => {
+    const { services, prisma } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const { engagementId } = await newEngagementWithApprovedFinding();
+
+    const created = await caller.report.create({
+      engagementId,
+      title: "Submit race",
+    });
+    const filledVersion = await fillAllEditorialSections(caller, created.id, created.version);
+    // Simulate a concurrent writer between fill-completion check and submit.
+    await prisma.report.update({
+      where: { id: created.id },
+      data: { version: { increment: 1 } },
+    });
+    await expect(
+      caller.report.submitForSignoff({
+        id: created.id,
+        expectedVersion: filledVersion,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("regenerateDataSections: optimistic-concurrency conflict at DB layer (Gemini W2 round-2 #4)", async () => {
+    const { services, prisma } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const { engagementId } = await newEngagementWithApprovedFinding();
+
+    const created = await caller.report.create({
+      engagementId,
+      title: "Regen race",
+    });
+    await prisma.report.update({
+      where: { id: created.id },
+      data: { version: { increment: 1 } },
+    });
+    await expect(
+      caller.report.regenerateDataSections({
+        id: created.id,
+        expectedVersion: created.version,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
   });
 });
 
