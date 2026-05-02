@@ -171,24 +171,24 @@ export const reportRouter = router({
         next,
       );
 
-      const [updatedReport] = await ctx.services.prismaTenant.$transaction(
+      // Capture both updates from the transaction — avoids a third
+      // `findUniqueOrThrow` round-trip just to re-read the version row
+      // we just updated.
+      const [updatedReport, updatedVersion] = await ctx.services.prismaTenant.$transaction(
         async (tx) => {
           const r = await tx.report.update({
             where: { id: report.id },
             data: { version: { increment: 1 } },
           });
-          await tx.reportVersion.update({
+          const v = await tx.reportVersion.update({
             where: { id: version.id },
             data: { contentCipher: cipher },
           });
-          return [r] as const;
+          return [r, v] as const;
         },
       );
 
-      const refreshedVersion = await ctx.services.prismaTenant.reportVersion.findUniqueOrThrow({
-        where: { id: version.id },
-      });
-      return toDetail(updatedReport, refreshedVersion, next);
+      return toDetail(updatedReport, updatedVersion, next);
     }),
 
   // ─── updateEditorial (autosave for one editorial section) ───────────────
@@ -529,14 +529,24 @@ async function loadReportWithVersion(
   prisma: AuthedPrisma,
   id: string,
 ): Promise<{ report: ReportRow; version: ReportVersionRow }> {
-  const report = await prisma.report.findUnique({ where: { id } });
-  if (!report) {
+  // Single query with `include` — saves a round-trip versus loading the
+  // report and the latest version separately. Slice A keeps one
+  // ReportVersion per Report (per ADR-0008-deferred slice plan); the
+  // `take: 1` future-proofs for amendment chains.
+  const reportWithVersions = await prisma.report.findUnique({
+    where: { id },
+    include: {
+      versions: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+      },
+    },
+  });
+  if (!reportWithVersions) {
     throw new TRPCError({ code: "NOT_FOUND", message: "Report not found." });
   }
-  const version = await prisma.reportVersion.findFirst({
-    where: { reportId: id },
-    orderBy: { createdAt: "desc" },
-  });
+  const { versions, ...report } = reportWithVersions;
+  const version = versions[0];
   if (!version) {
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
