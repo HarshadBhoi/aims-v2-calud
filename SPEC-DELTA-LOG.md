@@ -47,6 +47,51 @@ The spec updates themselves are deliberately **deferred** — touching the slice
 
 ## Entries
 
+### 2026-05-02 — W2 day 5 — `pack-renderer` wired at API layer, not in worker pdfkit
+
+**Status:** 🔄 In effect
+
+**Spec ([VERTICAL-SLICE-B-PLAN.md §4 W2 day 5](VERTICAL-SLICE-B-PLAN.md)):**
+> Wire the worker's pdfkit renderer through `pack-renderer` instead of reading finding values directly.
+
+**Reality:**
+- `@aims/pack-renderer` is invoked at the API layer in [`apps/api/src/routers/report.ts`](apps/api/src/routers/report.ts) `buildInitialSections` — translating finding element values into the report's `attestsTo` pack vocabulary as part of section text assembly.
+- The worker's [`apps/worker/src/render/pdf.renderer.ts`](apps/worker/src/render/pdf.renderer.ts) is unchanged from slice A; it consumes the pre-translated section text and lays it out with pdfkit.
+- The slice plan literal said the worker's pdfkit renderer should import `pack-renderer`; the implementation has the API doing the cross-pack translation upstream.
+
+**Why:**
+- The `ReportSectionsInput` schema is `Record<string, { kind: 'data' | 'editorial', content: string }>` — pre-formatted text. To consume `pack-renderer`'s structured rows in the worker, the schema would need a third section kind carrying structured finding data, which cascades into the content-hash computation and the worker's pdfkit layout primitives.
+- Putting `pack-renderer` upstream at the API keeps the worker as a dumb paginator (slice-A architecture preserved), and section text is the single source of truth across signing + audit-log emission + worker rendering.
+- The architectural intent — "translate canonical → target-pack vocabulary via mappings before rendering" — is fully satisfied; the section text the worker renders is pack-aware.
+
+**Implication:**
+- A future slice that introduces structured-row PDF features (e.g., per-element footer notes laid out with smaller font, equivalence-strength annotations as colored callouts rather than inline text) will need to either (a) import `pack-renderer` into the worker and switch to a structured section payload, or (b) extend the API-side text formatting with markup the worker parses. Slice C's PDF-quality slice can pick.
+- Spec to update: VERTICAL-SLICE-B-PLAN.md §4 W2 day 5 — the literal "wire the worker's pdfkit renderer" wording is over-prescriptive about *which* layer hosts the renderer. The architectural intent is what matters.
+- Gemini's W2-milestone review (2026-05-02) reviewed this and accepted it as a build-time choice ("document in the spec delta and move on"); not an ADR-worthy commitment.
+
+---
+
+### 2026-05-02 — W2 — `Report.attestsTo` as a column-on-Report rather than polymorphic ref
+
+**Status:** 📝 Informational
+
+**Spec ([VERTICAL-SLICE-B-PLAN.md §3.1](VERTICAL-SLICE-B-PLAN.md)):**
+> **Changed: `Report.attestsTo`** — already exists; re-validate that it accepts any *attached* pack on the engagement (not just primary).
+
+**Reality:**
+- The slice plan said "already exists" — but `Report.attestsTo` did NOT exist in the schema as of W2 start. Added in W2.5 as two FK columns: `attestsToPackCode` + `attestsToPackVersion` referencing `StandardPack(code, version)`. Migration 20260502032057 backfills existing slice-A reports from each engagement's primary pack.
+- Default behavior on `report.create` is "attest to engagement's primary methodology" when the caller omits `attestsToPack*`. This preserves slice-A behavior.
+- Resolved per-pack via `resolveAttestsToPack` helper which validates the chosen pack is in fact attached.
+
+**Why:**
+- A column-on-Report is the simplest shape that supports two reports per engagement attesting to different packs (the W2 exit criterion). A polymorphic pack reference (a `ReportPackAttestation` join table) would be over-engineered for a 1:1 relationship.
+
+**Implication:**
+- A future slice that wants a report to attest to *multiple* packs simultaneously (e.g., a Single Audit report attesting to both GAGAS and the Single Audit overlay) needs a join table — at which point the column-on-Report becomes wrong. That use case isn't on the roadmap; revisit when it lands.
+- Gemini's W2-milestone review (2026-05-02) reviewed this and accepted it as a build-time choice ("document in the spec delta and move on"); not an ADR-worthy commitment for slice B.
+
+---
+
 ### 2026-05-01 — 2.x `DATABASE_URL` split into tenant + admin connections
 
 **Status:** 🔄 In effect

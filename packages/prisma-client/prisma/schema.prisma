@@ -565,6 +565,14 @@ model ReportVersion {
   signedBy String?
   signedAt DateTime? @db.Timestamptz(6)
 
+  /// Slice B (per ADR-0012): the compliance "conducted in accordance with…"
+  /// sentence is a legal artifact frozen at sign-off. While the report is
+  /// in DRAFT, `report.compliance` computes live from the engagement's
+  /// current attached packs; at sign-off the procedure snapshots the
+  /// sentence here so subsequent pack changes don't silently mutate the
+  /// signed report's attestation. NULL while DRAFT.
+  complianceStatement String?
+
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 
   @@unique([reportId, versionNumber])

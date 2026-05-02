@@ -1995,6 +1995,83 @@ describe("report router — cross-pack rendering (slice B W2.5)", () => {
     );
   });
 
+  it("report.compliance: DRAFT vs SIGNED — frozen snapshot at sign-off (ADR-0012)", async () => {
+    // A signed report's compliance text must NOT mutate when packs change
+    // afterward. Live computation is fine for drafts; sign-off freezes.
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const { engagementId, findingId } = await setupMultiPackWithFinding(
+      "compliance-snapshot",
+    );
+
+    // Create + sign a report attesting to GAGAS. Submit-for-signoff,
+    // sign with a fresh-MFA caller. Need at least one APPROVED finding,
+    // which the helper provides.
+    expect(findingId).toBeTruthy();
+    const draft = await caller.report.create({
+      engagementId,
+      title: "Compliance snapshot test",
+      attestsToPackCode: "GAGAS",
+      attestsToPackVersion: "2024.1",
+    });
+
+    // Live preview before sign — frozen=false.
+    const draftCompliance = await caller.report.compliance({ id: draft.id });
+    expect(draftCompliance.frozen).toBe(false);
+    expect(draftCompliance.claims.length).toBeGreaterThan(0);
+    const draftSentence = draftCompliance.sentence;
+
+    // Fill editorial sections (submitForSignoff requires non-empty
+    // executive_summary / recommendations / closing per slice-A invariant).
+    let v = draft.version;
+    for (const key of ["executive_summary", "recommendations", "closing"]) {
+      const r = await caller.report.updateEditorial({
+        id: draft.id,
+        sectionKey: key,
+        content: `${key} body for snapshot test`,
+        expectedVersion: v,
+      });
+      v = r.version;
+    }
+    const submitted = await caller.report.submitForSignoff({
+      id: draft.id,
+      expectedVersion: v,
+    });
+    const mfaCaller = appRouter.createCaller(
+      makeAuthedContext(services, {
+        mfaFreshUntil: new Date(Date.now() + 5 * 60 * 1000),
+      }),
+    );
+    await mfaCaller.report.sign({
+      id: submitted.id,
+      expectedVersion: submitted.version,
+      attestation: "I approve",
+    });
+
+    // Post-sign read — frozen=true, sentence matches the snapshot.
+    const signedCompliance = await caller.report.compliance({ id: draft.id });
+    expect(signedCompliance.frozen).toBe(true);
+    expect(signedCompliance.sentence).toBe(draftSentence);
+    // Structured claims dropped per ADR-0012.
+    expect(signedCompliance.claims).toHaveLength(0);
+
+    // Mutate the engagement's pack graph AFTER sign-off — a new methodology
+    // attached for an unrelated reason. The signed report's compliance
+    // sentence must not change.
+    // (Actually swapPrimary or detach a non-primary; but since GAGAS is
+    // primary and IIA is secondary, detach IIA — that's the simplest
+    // post-sign mutation that proves immutability.)
+    await caller.pack.detach({
+      engagementId,
+      packCode: "IIA-GIAS",
+      packVersion: "2024.1",
+    });
+
+    const stillFrozen = await caller.report.compliance({ id: draft.id });
+    expect(stillFrozen.frozen).toBe(true);
+    expect(stillFrozen.sentence).toBe(draftSentence); // unchanged
+  });
+
   it("classification taxonomy is translated through the target pack (Gemini W2 review catch #1)", async () => {
     // Prisma enum stores GAGAS-shaped classification values
     // (MINOR=1, SIGNIFICANT=2, MATERIAL=3, CRITICAL=4). When rendered

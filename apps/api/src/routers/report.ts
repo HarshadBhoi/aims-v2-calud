@@ -159,56 +159,42 @@ export const reportRouter = router({
     }),
 
   // ─── compliance ─────────────────────────────────────────────────────────
-  // Slice B (per VERTICAL-SLICE-B-PLAN §3.2 + §1.1): assembles the
-  // "conducted in accordance with…" sentence for a report from its
+  // Slice B (per VERTICAL-SLICE-B-PLAN §3.2 + §1.1 + ADR-0012): assembles
+  // the "conducted in accordance with…" sentence for a report from its
   // engagement's attached packs filtered to `conformanceClaimed=true`.
-  // The pack the report `attestsTo` is named first; other claimed packs
-  // appear as additional methodologies. Read-only — no side effects.
+  //
+  // Per ADR-0012, semantics depend on the report's lifecycle:
+  //   - DRAFT: computed live from the engagement's currently-attached
+  //     packs (the auditor is iterating; live feedback is helpful).
+  //   - SIGNED: returns the frozen sentence captured into
+  //     `ReportVersion.complianceStatement` at sign-off — a published
+  //     report is a legal artifact and must not silently mutate when
+  //     packs change after the fact.
+  // Read-only — no side effects.
   compliance: authenticatedProcedure
     .input(ComplianceReportInput)
     .query(async ({ ctx, input }): Promise<ReportComplianceStatement> => {
-      const report = await ctx.services.prismaTenant.report.findUnique({
-        where: { id: input.id },
-      });
-      if (!report) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Report not found." });
+      const { report, version } = await loadReportWithVersion(
+        ctx.services.prismaTenant,
+        input.id,
+      );
+      // Signed report → return the frozen snapshot. The persisted sentence
+      // is the legal artifact; live recomputation could leak post-sign
+      // attachment changes into a published claim.
+      if (version.complianceStatement !== null) {
+        return {
+          reportId: report.id,
+          attestsTo: {
+            packCode: report.attestsToPackCode,
+            packVersion: report.attestsToPackVersion,
+          },
+          claims: [],
+          sentence: version.complianceStatement,
+          frozen: true,
+        };
       }
-
-      const claimedAttachments = await ctx.services.prismaTenant.packAttachment.findMany({
-        where: { engagementId: report.engagementId, conformanceClaimed: true },
-        include: { pack: true },
-        orderBy: [{ isPrimary: "desc" }, { packCode: "asc" }],
-      });
-
-      // Build the structured `claims` list with attestsTo first.
-      const claims = claimedAttachments
-        .map((a) => ({
-          packCode: a.packCode,
-          packVersion: a.packVersion,
-          packName: a.pack.name,
-          issuingBody: a.pack.issuingBody,
-          isPrimary: a.isPrimary,
-          isAttestedTo:
-            a.packCode === report.attestsToPackCode &&
-            a.packVersion === report.attestsToPackVersion,
-        }))
-        .sort((a, b) => {
-          if (a.isAttestedTo !== b.isAttestedTo) return a.isAttestedTo ? -1 : 1;
-          return a.packCode.localeCompare(b.packCode);
-        });
-
-      // Compose the human-readable sentence. attestsTo always comes first.
-      const sentence = composeComplianceSentence(claims);
-
-      return {
-        reportId: report.id,
-        attestsTo: {
-          packCode: report.attestsToPackCode,
-          packVersion: report.attestsToPackVersion,
-        },
-        claims,
-        sentence,
-      };
+      // DRAFT path: live computation.
+      return computeLiveCompliance(ctx.services.prismaTenant, report);
     }),
 
   // ─── regenerateDataSections ─────────────────────────────────────────────
@@ -414,6 +400,16 @@ export const reportRouter = router({
       );
       const contentHash = computeReportContentHash(sections);
 
+      // Snapshot the compliance sentence per ADR-0012. A signed report is
+      // a legal artifact whose attestation claims must not silently mutate
+      // when packs change later. Computed live here from the engagement's
+      // currently-attached packs and frozen into ReportVersion.
+      const liveCompliance = await computeLiveCompliance(
+        ctx.services.prismaTenant,
+        report,
+      );
+      const complianceSnapshot = liveCompliance.sentence;
+
       const signedAt = new Date();
 
       const [updatedReport, updatedVersion] = await ctx.services.prismaTenant.$transaction(
@@ -429,6 +425,7 @@ export const reportRouter = router({
               contentHash,
               signedBy: ctx.session.userId,
               signedAt,
+              complianceStatement: complianceSnapshot,
             },
           });
           // Capture the active trace context so the worker can resume the
@@ -726,6 +723,48 @@ function translateClassificationToPack(
 }
 
 /**
+ * Compute the live compliance statement from the engagement's currently
+ * attached packs. Used for DRAFT reports (where the auditor wants live
+ * feedback) and as the source for the sign-off snapshot per ADR-0012.
+ */
+async function computeLiveCompliance(
+  prisma: AuthedPrisma,
+  report: { id: string; engagementId: string; attestsToPackCode: string; attestsToPackVersion: string },
+): Promise<ReportComplianceStatement> {
+  const claimedAttachments = await prisma.packAttachment.findMany({
+    where: { engagementId: report.engagementId, conformanceClaimed: true },
+    include: { pack: true },
+    orderBy: [{ isPrimary: "desc" }, { packCode: "asc" }],
+  });
+  const claims = claimedAttachments
+    .map((a) => ({
+      packCode: a.packCode,
+      packVersion: a.packVersion,
+      packName: a.pack.name,
+      issuingBody: a.pack.issuingBody,
+      isPrimary: a.isPrimary,
+      isAttestedTo:
+        a.packCode === report.attestsToPackCode &&
+        a.packVersion === report.attestsToPackVersion,
+    }))
+    .sort((a, b) => {
+      if (a.isAttestedTo !== b.isAttestedTo) return a.isAttestedTo ? -1 : 1;
+      return a.packCode.localeCompare(b.packCode);
+    });
+  const sentence = composeComplianceSentence(claims);
+  return {
+    reportId: report.id,
+    attestsTo: {
+      packCode: report.attestsToPackCode,
+      packVersion: report.attestsToPackVersion,
+    },
+    claims,
+    sentence,
+    frozen: false,
+  };
+}
+
+/**
  * Compose the compliance "conducted in accordance with…" sentence from the
  * report's claims list. The pack the report attests to is named first; any
  * additional conformance-claimed packs are appended as " and …". When no
@@ -826,6 +865,7 @@ type ReportVersionRow = {
   pdfRenderedAt: Date | null;
   signedBy: string | null;
   signedAt: Date | null;
+  complianceStatement: string | null;
   createdAt: Date;
 };
 

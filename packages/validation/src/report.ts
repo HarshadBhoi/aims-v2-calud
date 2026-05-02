@@ -60,11 +60,17 @@ export const ComplianceReportInput = z.object({ id: CuidString });
 export type ComplianceReportInput = z.infer<typeof ComplianceReportInput>;
 
 /**
- * Slice B (per VERTICAL-SLICE-B-PLAN §3.2): the assembled compliance
- * statement returned by `report.compliance`. The `sentence` is the
- * human-readable form for inclusion in PDF cover pages and report
- * disclosures; `claims` is the structured form callers can format
- * differently (e.g., a UI badge list).
+ * Slice B (per VERTICAL-SLICE-B-PLAN §3.2 + ADR-0012): the assembled
+ * compliance statement returned by `report.compliance`.
+ *
+ * `sentence` is the human-readable form for inclusion in PDF cover pages
+ * and report disclosures; `claims` is the structured form callers can
+ * format differently (e.g., a UI badge list); `frozen` distinguishes:
+ *   - frozen=false (DRAFT report): live-computed from current attachments;
+ *     `claims` populated.
+ *   - frozen=true (SIGNED report): snapshot captured at sign-off per
+ *     ADR-0012; `claims` empty (the structured form isn't preserved —
+ *     only the sentence is the legal artifact).
  */
 export type ReportComplianceStatement = {
   readonly reportId: string;
@@ -78,6 +84,7 @@ export type ReportComplianceStatement = {
     readonly isAttestedTo: boolean;
   }[];
   readonly sentence: string;
+  readonly frozen: boolean;
 };
 
 export const ListReportsInput = z.object({ engagementId: CuidString });
