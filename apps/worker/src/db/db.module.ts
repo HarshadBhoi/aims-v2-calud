@@ -10,6 +10,8 @@
 import { createAdminPrismaClient, type AdminPrismaClient } from "@aims/prisma-client";
 import { Module, type OnModuleDestroy } from "@nestjs/common";
 
+import { loadConfig } from "../config";
+
 export const ADMIN_PRISMA = "ADMIN_PRISMA";
 
 class PrismaLifecycle implements OnModuleDestroy {
@@ -24,7 +26,17 @@ class PrismaLifecycle implements OnModuleDestroy {
   providers: [
     {
       provide: ADMIN_PRISMA,
-      useFactory: () => createAdminPrismaClient(),
+      useFactory: () => {
+        // Load config inline (matches AwsModule's WORKER_CONFIG factory) —
+        // a separate ConfigModule would be cleaner long-term but adds
+        // overhead the slice doesn't need yet.
+        const config = loadConfig();
+        return createAdminPrismaClient(
+          config.databaseAdminUrl
+            ? { datasources: { db: { url: config.databaseAdminUrl } } }
+            : undefined,
+        );
+      },
     },
     {
       provide: PrismaLifecycle,

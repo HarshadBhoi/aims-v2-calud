@@ -38,7 +38,16 @@ export type Services = {
 };
 
 export async function createServices(config: Config): Promise<Services> {
-  const prisma = createAdminPrismaClient();
+  // Admin connection (BYPASSRLS) for cross-tenant ops; tenant connection
+  // (RLS-bound, scoped per-request via the Prisma extension) for everything
+  // else. Per ADR-0002. If `databaseAdminUrl` is unset, the admin client
+  // inherits DATABASE_URL — matches the test pattern where a single
+  // superuser connection serves both clients.
+  const prisma = createAdminPrismaClient(
+    config.databaseAdminUrl
+      ? { datasources: { db: { url: config.databaseAdminUrl } } }
+      : undefined,
+  );
   const prismaTenant = createTenantPrismaClient();
 
   const kmsClient = new KMSClient({

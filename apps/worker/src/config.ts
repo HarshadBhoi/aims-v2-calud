@@ -17,6 +17,15 @@ export type WorkerConfig = {
   readonly outboxMaxAttempts: number;
   readonly kmsMasterKeyAlias: string;
   readonly reportsBucket: string;
+  /**
+   * BYPASSRLS-grade Postgres URL for the worker's admin Prisma client.
+   * Per ADR-0002: the worker is cross-tenant by design (drains everyone's
+   * outbox, processes everyone's `report.published` events) so it must
+   * not be RLS-scoped. When unset, the client falls back to DATABASE_URL —
+   * appropriate for tests where the testcontainer's superuser inherently
+   * bypasses RLS.
+   */
+  readonly databaseAdminUrl: string | undefined;
 };
 
 function optional(key: string): string | undefined {
@@ -61,5 +70,6 @@ export function loadConfig(): WorkerConfig {
     kmsMasterKeyAlias:
       process.env["AWS_KMS_MASTER_KEY_ALIAS"] ?? "alias/aims-dev-master",
     reportsBucket: process.env["AIMS_REPORTS_BUCKET"] ?? "aims-dev-reports",
+    databaseAdminUrl: optional("DATABASE_ADMIN_URL"),
   };
 }

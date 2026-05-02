@@ -170,6 +170,7 @@ beforeAll(async () => {
     outboxMaxAttempts: 5,
     kmsMasterKeyAlias: masterKeyArn,
     reportsBucket: "aims-test-reports",
+    databaseAdminUrl: undefined,
   };
 
   // Seed: tenant + DEK + user + engagement (engagement is the parent FK

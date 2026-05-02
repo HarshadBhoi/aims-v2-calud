@@ -144,6 +144,7 @@ beforeAll(async () => {
     refreshTokenTtlMs: 7 * 24 * 60 * 60 * 1000,
     awsRegion: "us-east-1",
     awsEndpointUrl: kmsEndpoint,
+    databaseAdminUrl: undefined,
     kmsMasterKeyAlias: masterKeyArn,
     reportsBucket: "aims-test-reports",
     reportDownloadUrlTtlSeconds: 300,

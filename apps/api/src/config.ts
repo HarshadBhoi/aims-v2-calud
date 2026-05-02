@@ -18,6 +18,19 @@ export type Config = {
   readonly accessTokenTtlMs: number;
   readonly refreshTokenTtlMs: number;
 
+  /**
+   * Per ADR-0002 the api uses two Postgres connections:
+   *   - tenant connection (DATABASE_URL) — RLS-bound role (`aims_app`),
+   *     scoped per-request via the Prisma extension's tenant context.
+   *   - admin connection (DATABASE_ADMIN_URL) — BYPASSRLS role
+   *     (`aims_migration` in dev) for cross-tenant operations:
+   *     auth's tenant lookup, audit-log chain verification, etc.
+   *   When DATABASE_ADMIN_URL is unset, falls back to DATABASE_URL —
+   *   matches dev-test connection patterns where the testcontainer's
+   *   superuser inherently bypasses RLS.
+   */
+  readonly databaseAdminUrl: string | undefined;
+
   readonly awsRegion: string;
   readonly awsEndpointUrl: string | undefined;
   readonly kmsMasterKeyAlias: string;
@@ -62,6 +75,8 @@ export function loadConfig(): Config {
       process.env["AUTH_REFRESH_TOKEN_TTL_MS"] ?? String(7 * 24 * 60 * 60 * 1000),
       10,
     ),
+
+    databaseAdminUrl: optional("DATABASE_ADMIN_URL"),
 
     awsRegion: process.env["AWS_REGION"] ?? "us-east-1",
     awsEndpointUrl: optional("AWS_ENDPOINT_URL"),
