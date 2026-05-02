@@ -336,6 +336,13 @@ model PackAttachment {
   /// the DB layer.
   isPrimary Boolean @default(false)
 
+  /// Slice B (per VERTICAL-SLICE-B-PLAN §1.1): whether this attachment is
+  /// claimed for conformance — i.e., whether `report.compliance` includes
+  /// the pack in its "conducted in accordance with…" sentence. Defaults true
+  /// for methodology attachments (the common case); a future "attached for
+  /// reference but not conformance-claimed" use case can flip this to false.
+  conformanceClaimed Boolean @default(true)
+
   attachedAt DateTime @default(now()) @db.Timestamptz(6)
   attachedBy String
 

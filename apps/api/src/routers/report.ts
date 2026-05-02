@@ -25,6 +25,7 @@
 import { type EncryptionModule } from "@aims/encryption";
 import { renderFindingForPack, type PackContent } from "@aims/pack-renderer";
 import {
+  ComplianceReportInput,
   CreateReportInput,
   DownloadReportPdfInput,
   GetReportInput,
@@ -34,6 +35,7 @@ import {
   SubmitReportForSignoffInput,
   UpdateReportEditorialInput,
   computeReportContentHash,
+  type ReportComplianceStatement,
   type ReportDetail,
   type ReportDownloadUrl,
   type ReportSectionsInput,
@@ -154,6 +156,59 @@ export const reportRouter = router({
         orderBy: { createdAt: "desc" },
       });
       return reports.map(toSummary);
+    }),
+
+  // ─── compliance ─────────────────────────────────────────────────────────
+  // Slice B (per VERTICAL-SLICE-B-PLAN §3.2 + §1.1): assembles the
+  // "conducted in accordance with…" sentence for a report from its
+  // engagement's attached packs filtered to `conformanceClaimed=true`.
+  // The pack the report `attestsTo` is named first; other claimed packs
+  // appear as additional methodologies. Read-only — no side effects.
+  compliance: authenticatedProcedure
+    .input(ComplianceReportInput)
+    .query(async ({ ctx, input }): Promise<ReportComplianceStatement> => {
+      const report = await ctx.services.prismaTenant.report.findUnique({
+        where: { id: input.id },
+      });
+      if (!report) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Report not found." });
+      }
+
+      const claimedAttachments = await ctx.services.prismaTenant.packAttachment.findMany({
+        where: { engagementId: report.engagementId, conformanceClaimed: true },
+        include: { pack: true },
+        orderBy: [{ isPrimary: "desc" }, { packCode: "asc" }],
+      });
+
+      // Build the structured `claims` list with attestsTo first.
+      const claims = claimedAttachments
+        .map((a) => ({
+          packCode: a.packCode,
+          packVersion: a.packVersion,
+          packName: a.pack.name,
+          issuingBody: a.pack.issuingBody,
+          isPrimary: a.isPrimary,
+          isAttestedTo:
+            a.packCode === report.attestsToPackCode &&
+            a.packVersion === report.attestsToPackVersion,
+        }))
+        .sort((a, b) => {
+          if (a.isAttestedTo !== b.isAttestedTo) return a.isAttestedTo ? -1 : 1;
+          return a.packCode.localeCompare(b.packCode);
+        });
+
+      // Compose the human-readable sentence. attestsTo always comes first.
+      const sentence = composeComplianceSentence(claims);
+
+      return {
+        reportId: report.id,
+        attestsTo: {
+          packCode: report.attestsToPackCode,
+          packVersion: report.attestsToPackVersion,
+        },
+        claims,
+        sentence,
+      };
     }),
 
   // ─── regenerateDataSections ─────────────────────────────────────────────
@@ -627,6 +682,49 @@ async function decryptSections(
 
 function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
+/**
+ * Compose the compliance "conducted in accordance with…" sentence from the
+ * report's claims list. The pack the report attests to is named first; any
+ * additional conformance-claimed packs are appended as " and …". When no
+ * conformance-claimed packs exist (shouldn't happen given the pack-attach
+ * defaults, but guarded), returns a "conformance not formally claimed" line.
+ */
+function composeComplianceSentence(
+  claims: readonly {
+    packName: string;
+    packCode: string;
+    packVersion: string;
+    issuingBody: string;
+    isAttestedTo: boolean;
+  }[],
+): string {
+  if (claims.length === 0) {
+    return "Conformance with any audit standard is not formally claimed for this report.";
+  }
+  const formatClaim = (c: {
+    packName: string;
+    packCode: string;
+    packVersion: string;
+    issuingBody: string;
+  }): string => `${c.packName} (${c.packCode}:${c.packVersion}, issued by ${c.issuingBody})`;
+
+  // claims[0] is the attestsTo pack (sorted that way by the procedure).
+  const attestsTo = claims[0];
+  if (!attestsTo) {
+    // unreachable given the length check above
+    return "Conformance with any audit standard is not formally claimed for this report.";
+  }
+  const others = claims.slice(1);
+  if (others.length === 0) {
+    return `This report was conducted in accordance with ${formatClaim(attestsTo)}.`;
+  }
+  const othersList = others.map(formatClaim).join("; ");
+  return (
+    `This report was conducted in accordance with ${formatClaim(attestsTo)}; ` +
+    `additional methodologies attached and conformance-claimed: ${othersList}.`
+  );
 }
 
 async function loadReportWithVersion(

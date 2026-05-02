@@ -1678,6 +1678,225 @@ describe("report router — cross-pack rendering (slice B W2.5)", () => {
     expect(iiaSummary).toContain("Root Cause:");
   });
 
+  it("IIA-primary engagement: GAGAS-attesting report renders findings under GAGAS labels", async () => {
+    // The mirror of the W2.5 default test: when IIA is the engagement's
+    // primary methodology and GAGAS is secondary, a GAGAS-attesting report
+    // still renders findings under GAGAS labels — proving the renderer is
+    // direction-agnostic, not biased toward whatever happens to be primary.
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const eng = await caller.engagement.create({
+      name: "iia-primary-engagement",
+      auditeeName: "ReverseCo",
+      fiscalPeriod: "FY27",
+      periodStart: new Date("2027-01-01"),
+      periodEnd: new Date("2027-12-31"),
+      leadUserId: userId,
+    });
+    // Attach IIA first → IIA becomes primary.
+    await caller.pack.attach({
+      engagementId: eng.id,
+      packCode: "IIA-GIAS",
+      packVersion: "2024.1",
+    });
+    await caller.pack.attach({
+      engagementId: eng.id,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+
+    // Author a finding under IIA-primary; submit + approve.
+    const finding = await caller.finding.create({
+      engagementId: eng.id,
+      title: "IIA-primary finding",
+      initialElements: {
+        CRITERIA: FILLED,
+        CONDITION: FILLED,
+        CAUSE: FILLED,
+        EFFECT: FILLED,
+        RECOMMENDATION: FILLED,
+      },
+    });
+    const submitted = await caller.finding.submitForReview({
+      id: finding.id,
+      expectedVersion: finding.version,
+    });
+    const mfaCaller = appRouter.createCaller(
+      makeAuthedContext(services, {
+        mfaFreshUntil: new Date(Date.now() + 5 * 60 * 1000),
+      }),
+    );
+    await mfaCaller.finding.decide({
+      id: submitted.id,
+      expectedVersion: submitted.version,
+      decision: "APPROVED",
+      comment: "approved for IIA-primary cross-pack render test",
+    });
+
+    // GAGAS-attesting report off the IIA-primary engagement.
+    const gagasReport = await caller.report.create({
+      engagementId: eng.id,
+      title: "GAGAS report (IIA-primary engagement)",
+      attestsToPackCode: "GAGAS",
+      attestsToPackVersion: "2024.1",
+    });
+    const summary = gagasReport.sections["findings_summary"]?.content ?? "";
+    // GAGAS labels in the section text.
+    expect(summary).toContain("Cause:");
+    expect(summary).toContain("Effect:");
+    // IIA primary → close-mapping footer absent for GAGAS targets (GAGAS
+    // mappings are all `exact` regardless of who's primary).
+    expect(summary).not.toContain("(rendered under");
+  });
+
+  it("missing canonical code: renderer leaves the slot empty without warning", async () => {
+    // A finding authored under GAGAS-only (4 codes). Attach IIA later →
+    // strictness union now includes RECOMMENDATION. Render under IIA →
+    // RECOMMENDATION row should appear empty (the finding never had a value
+    // for it), not crash, not warn.
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const eng = await caller.engagement.create({
+      name: "missing-canonical",
+      auditeeName: "PartialCo",
+      fiscalPeriod: "FY27",
+      periodStart: new Date("2027-01-01"),
+      periodEnd: new Date("2027-12-31"),
+      leadUserId: userId,
+    });
+    await caller.pack.attach({
+      engagementId: eng.id,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+    // Pre-IIA: finding fills only the 4 GAGAS codes.
+    const finding = await caller.finding.create({
+      engagementId: eng.id,
+      title: "GAGAS-only finding",
+      initialElements: {
+        CRITERIA: FILLED,
+        CONDITION: FILLED,
+        CAUSE: FILLED,
+        EFFECT: FILLED,
+      },
+    });
+    const submitted = await caller.finding.submitForReview({
+      id: finding.id,
+      expectedVersion: finding.version,
+    });
+    const mfaCaller = appRouter.createCaller(
+      makeAuthedContext(services, {
+        mfaFreshUntil: new Date(Date.now() + 5 * 60 * 1000),
+      }),
+    );
+    await mfaCaller.finding.decide({
+      id: submitted.id,
+      expectedVersion: submitted.version,
+      decision: "APPROVED",
+      comment: "approved for missing-canonical fallback test",
+    });
+    // Now attach IIA (becomes secondary).
+    await caller.pack.attach({
+      engagementId: eng.id,
+      packCode: "IIA-GIAS",
+      packVersion: "2024.1",
+    });
+
+    // IIA-attesting report. Finding has no RECOMMENDATION value.
+    const iiaReport = await caller.report.create({
+      engagementId: eng.id,
+      title: "IIA report on GAGAS-authored finding",
+      attestsToPackCode: "IIA-GIAS",
+      attestsToPackVersion: "2024.1",
+    });
+    const summary = iiaReport.sections["findings_summary"]?.content ?? "";
+    // RECOMMENDATION row appears with "(not provided)" placeholder — the
+    // empty value is rendered without crashing the assembly.
+    expect(summary).toContain("Recommendation: (not provided)");
+    // Other rows still render fine via the close-mapping path is N/A here
+    // (CAUSE → ROOT_CAUSE is exact for IIA), and CONSEQUENCE shows the
+    // GAGAS finding's EFFECT value.
+    expect(summary).toContain("Root Cause:");
+    expect(summary).toContain("Consequence:");
+  });
+
+  it("report.compliance: GAGAS-attesting report on GAGAS-only engagement", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const eng = await caller.engagement.create({
+      name: "compliance-gagas-only",
+      auditeeName: "Co",
+      fiscalPeriod: "FY27",
+      periodStart: new Date("2027-01-01"),
+      periodEnd: new Date("2027-12-31"),
+      leadUserId: userId,
+    });
+    await caller.pack.attach({
+      engagementId: eng.id,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+    const report = await caller.report.create({
+      engagementId: eng.id,
+      title: "GAGAS-only report",
+    });
+
+    const compliance = await caller.report.compliance({ id: report.id });
+    expect(compliance.attestsTo).toEqual({
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+    expect(compliance.claims).toHaveLength(1);
+    expect(compliance.claims[0]?.isAttestedTo).toBe(true);
+    expect(compliance.claims[0]?.isPrimary).toBe(true);
+    expect(compliance.sentence).toContain("GAGAS 2024");
+    expect(compliance.sentence).toContain("(GAGAS:2024.1, issued by GAO)");
+    // No "additional methodologies" since only one pack is attached.
+    expect(compliance.sentence).not.toContain("additional methodologies");
+  });
+
+  it("report.compliance: multi-pack — attestsTo named first, others appended", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const eng = await caller.engagement.create({
+      name: "compliance-multi",
+      auditeeName: "Co",
+      fiscalPeriod: "FY27",
+      periodStart: new Date("2027-01-01"),
+      periodEnd: new Date("2027-12-31"),
+      leadUserId: userId,
+    });
+    await caller.pack.attach({
+      engagementId: eng.id,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+    await caller.pack.attach({
+      engagementId: eng.id,
+      packCode: "IIA-GIAS",
+      packVersion: "2024.1",
+    });
+
+    const iiaReport = await caller.report.create({
+      engagementId: eng.id,
+      title: "IIA report",
+      attestsToPackCode: "IIA-GIAS",
+      attestsToPackVersion: "2024.1",
+    });
+    const compliance = await caller.report.compliance({ id: iiaReport.id });
+
+    // claims[0] is attestsTo (IIA) regardless of which is primary.
+    expect(compliance.claims[0]?.packCode).toBe("IIA-GIAS");
+    expect(compliance.claims[0]?.isAttestedTo).toBe(true);
+    expect(compliance.claims[1]?.packCode).toBe("GAGAS");
+    expect(compliance.claims[1]?.isAttestedTo).toBe(false);
+
+    // Sentence names IIA first, GAGAS as additional methodology.
+    expect(compliance.sentence).toMatch(
+      /IIA Global Internal Audit Standards 2024.*additional methodologies attached and conformance-claimed:.*GAGAS 2024/,
+    );
+  });
+
   it("rejects attestsTo for a pack not attached to the engagement", async () => {
     const { services } = requireSetup();
     const caller = appRouter.createCaller(makeAuthedContext(services));

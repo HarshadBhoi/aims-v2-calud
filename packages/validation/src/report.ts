@@ -56,6 +56,30 @@ export type CreateReportInput = z.infer<typeof CreateReportInput>;
 export const GetReportInput = z.object({ id: CuidString });
 export type GetReportInput = z.infer<typeof GetReportInput>;
 
+export const ComplianceReportInput = z.object({ id: CuidString });
+export type ComplianceReportInput = z.infer<typeof ComplianceReportInput>;
+
+/**
+ * Slice B (per VERTICAL-SLICE-B-PLAN §3.2): the assembled compliance
+ * statement returned by `report.compliance`. The `sentence` is the
+ * human-readable form for inclusion in PDF cover pages and report
+ * disclosures; `claims` is the structured form callers can format
+ * differently (e.g., a UI badge list).
+ */
+export type ReportComplianceStatement = {
+  readonly reportId: string;
+  readonly attestsTo: { readonly packCode: string; readonly packVersion: string };
+  readonly claims: readonly {
+    readonly packCode: string;
+    readonly packVersion: string;
+    readonly packName: string;
+    readonly issuingBody: string;
+    readonly isPrimary: boolean;
+    readonly isAttestedTo: boolean;
+  }[];
+  readonly sentence: string;
+};
+
 export const ListReportsInput = z.object({ engagementId: CuidString });
 export type ListReportsInput = z.infer<typeof ListReportsInput>;
 

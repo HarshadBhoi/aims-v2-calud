@@ -173,8 +173,20 @@ beforeAll(async () => {
     databaseAdminUrl: undefined,
   };
 
-  // Seed: tenant + DEK + user + engagement (engagement is the parent FK
-  // for any report we create).
+  // Seed: standard pack (FK target for Report.attestsToPack* in slice B) +
+  // tenant + DEK + user + engagement.
+  await prisma.standardPack.create({
+    data: {
+      code: "GAGAS",
+      version: "2024.1",
+      name: "GAGAS 2024",
+      issuingBody: "GAO",
+      publishedYear: 2024,
+      contentHash: "sha256:worker-test-pack",
+      packContent: {},
+    },
+  });
+
   const tenant = await prisma.tenant.create({
     data: { slug: "worker-test", name: "Worker Test Tenant" },
   });
@@ -249,6 +261,10 @@ async function seedSignedReportVersion(): Promise<{
       title: "Worker render fixture",
       status: "PUBLISHED",
       authorId: userId,
+      // Slice B: every report attests to a specific pack. The test fixture
+      // attaches GAGAS-2024.1 as primary, so the report attests to it.
+      attestsToPackCode: "GAGAS",
+      attestsToPackVersion: "2024.1",
     },
   });
   const version = await prisma.reportVersion.create({
