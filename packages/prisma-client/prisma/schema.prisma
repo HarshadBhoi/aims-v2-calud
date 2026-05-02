@@ -406,7 +406,21 @@ model Finding {
   // GAGAS §6.39 element values (+ IIA 5-Cs etc. for other standards).
   // ALE-encrypted blob at rest: ciphertext of the serialized element object.
   // See @aims/encryption for shape.
+  //
+  // Slice A: keys were the engagement's primary pack's element codes (e.g.,
+  //   GAGAS's "CRITERIA" / "CONDITION" / "CAUSE" / "EFFECT").
+  // Slice B (per ADR-0010): keys are canonical SemanticElementCode values
+  //   ("CRITERIA" / "CONDITION" / "CAUSE" / "EFFECT" / "RECOMMENDATION" / ...).
+  //   The W1 day 4-7 migration script translates existing slice-A findings
+  //   via the primary pack's `semanticElementMappings`.
   elementValuesCipher Bytes?
+
+  /// Per ADR-0010: marks whether `elementValuesCipher` has been migrated to
+  /// canonical-code keys. Slice A findings start `false`; the W1 migration
+  /// script flips to `true` after a successful per-finding decrypt-translate-
+  /// re-encrypt round-trip. The flag is the migration's idempotency cursor:
+  /// re-runs skip rows where the flag matches the migration direction.
+  elementsCanonicalized Boolean @default(false)
 
   // Non-sensitive index — which elements are filled.
   // For GAGAS: 0-4 matching the four-element progress bar in UX.

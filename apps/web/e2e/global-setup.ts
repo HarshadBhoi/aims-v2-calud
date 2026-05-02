@@ -73,6 +73,15 @@ const GAGAS_PACK = {
     { code: "MATERIAL", severity: 3 },
     { code: "CRITICAL", severity: 4 },
   ],
+  // Slice B fields needed by the multi-pack resolver + W1 migration script.
+  semanticElementMappings: [
+    { semanticCode: "CRITERIA", packElementCode: "CRITERIA", equivalenceStrength: "exact" },
+    { semanticCode: "CONDITION", packElementCode: "CONDITION", equivalenceStrength: "exact" },
+    { semanticCode: "CAUSE", packElementCode: "CAUSE", equivalenceStrength: "exact" },
+    { semanticCode: "EFFECT", packElementCode: "EFFECT", equivalenceStrength: "exact" },
+  ],
+  independenceRules: { coolingOffPeriodMonths: 24 },
+  cpeRequirements: { requiredHoursPerCycle: 80 },
   documentationRequirements: {
     fourElementComplete: true,
     workPaperCitationRequired: true,

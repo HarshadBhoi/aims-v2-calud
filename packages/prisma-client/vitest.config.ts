@@ -9,6 +9,6 @@ export default defineConfig({
     hookTimeout: 120_000,
     // Run sequentially to avoid container/port contention.
     fileParallelism: false,
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "scripts/**/*.test.ts"],
   },
 });
