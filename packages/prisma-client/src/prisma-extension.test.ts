@@ -337,6 +337,217 @@ describe("tenant isolation extension", () => {
   });
 });
 
+/**
+ * Tenant isolation for the Slice B `EngagementStrictness` model — Day 1
+ * acceptance covers schema + RLS only; later days exercise the resolver
+ * write path that populates this table. The model is added to
+ * TENANT_SCOPED_MODELS in prisma-extension.ts and gets the standard
+ * tenant_isolation policy in the migration.
+ *
+ * Per ADR-0011's threats section: explicit positive (admin sees across)
+ * and negative (app blocked at DB layer) tests are required.
+ */
+describe("engagement strictness — tenant isolation (slice B day 1)", () => {
+  // Helpers — create the FK chain (User → Engagement) the strictness row
+  // depends on, scoped to a given tenant. Returns the engagement id.
+  async function seedEngagement(
+    tenantId: string,
+    suffix: string,
+  ): Promise<string> {
+    const { admin } = requireClients();
+    const lead = await admin.user.create({
+      data: {
+        tenantId,
+        email: `lead-${suffix}@${tenantId}.test`,
+        name: `Lead ${suffix}`,
+        role: "Senior",
+      },
+    });
+    const eng = await admin.engagement.create({
+      data: {
+        tenantId,
+        name: `eng-${suffix}`,
+        auditeeName: `auditee-${suffix}`,
+        fiscalPeriod: "FY26 Q1",
+        periodStart: new Date("2026-01-01"),
+        periodEnd: new Date("2026-03-31"),
+        leadUserId: lead.id,
+      },
+    });
+    return eng.id;
+  }
+
+  const SAMPLE_DRIVEN_BY = [
+    {
+      rule: "retentionYears",
+      value: 7,
+      source: { packCode: "GAGAS", packVersion: "2024.1", direction: "max" },
+    },
+  ];
+  const SAMPLE_DOC_REQS = {
+    fourElementComplete: true,
+    workPaperCitationRequired: false,
+    retentionYears: 7,
+  };
+
+  it("tenant client findMany returns only rows for the active tenant", async () => {
+    const { admin, tenant } = requireClients();
+    const t1Eng = await seedEngagement(tenant1Id, "strictness-t1-find");
+    const t2Eng = await seedEngagement(tenant2Id, "strictness-t2-find");
+
+    await admin.engagementStrictness.createMany({
+      data: [
+        {
+          tenantId: tenant1Id,
+          engagementId: t1Eng,
+          retentionYears: 7,
+          coolingOffMonths: 24,
+          cpeHours: 80,
+          documentationRequirements: SAMPLE_DOC_REQS,
+          requiredCanonicalCodes: ["CRITERIA", "CONDITION", "CAUSE", "EFFECT"],
+          drivenBy: SAMPLE_DRIVEN_BY,
+        },
+        {
+          tenantId: tenant2Id,
+          engagementId: t2Eng,
+          retentionYears: 5,
+          coolingOffMonths: 12,
+          cpeHours: 40,
+          documentationRequirements: { ...SAMPLE_DOC_REQS, retentionYears: 5 },
+          requiredCanonicalCodes: ["CRITERIA", "CONDITION"],
+          drivenBy: [
+            {
+              rule: "retentionYears",
+              value: 5,
+              source: { packCode: "IIA", packVersion: "2024.1", direction: "max" },
+            },
+          ],
+        },
+      ],
+    });
+
+    const t1Rows = await runWithTenantContext({ tenantId: tenant1Id }, () =>
+      tenant.engagementStrictness.findMany(),
+    );
+    expect(t1Rows).toHaveLength(1);
+    expect(t1Rows[0]?.engagementId).toBe(t1Eng);
+    expect(t1Rows[0]?.retentionYears).toBe(7);
+    expect(t1Rows.some((r) => r.engagementId === t2Eng)).toBe(false);
+  });
+
+  it("tenant client create auto-injects tenantId from the active context", async () => {
+    const { tenant } = requireClients();
+    const eng = await seedEngagement(tenant1Id, "strictness-t1-create");
+
+    const row = await runWithTenantContext({ tenantId: tenant1Id }, () =>
+      tenant.engagementStrictness.create({
+        // @ts-expect-error — tenantId omitted; the extension injects it.
+        data: {
+          engagementId: eng,
+          retentionYears: 7,
+          coolingOffMonths: 24,
+          documentationRequirements: SAMPLE_DOC_REQS,
+          requiredCanonicalCodes: ["CRITERIA"],
+          drivenBy: SAMPLE_DRIVEN_BY,
+        },
+      }),
+    );
+    expect(row.tenantId).toBe(tenant1Id);
+  });
+
+  it("tenant client rejects create with mismatched tenantId", async () => {
+    const { tenant } = requireClients();
+    const eng = await seedEngagement(tenant1Id, "strictness-t1-mismatch");
+
+    await expect(
+      runWithTenantContext({ tenantId: tenant1Id }, () =>
+        tenant.engagementStrictness.create({
+          data: {
+            tenantId: tenant2Id,
+            engagementId: eng,
+            retentionYears: 7,
+            coolingOffMonths: 24,
+            documentationRequirements: SAMPLE_DOC_REQS,
+            requiredCanonicalCodes: ["CRITERIA"],
+            drivenBy: SAMPLE_DRIVEN_BY,
+          },
+        }),
+      ),
+    ).rejects.toThrow(CrossTenantViolationError);
+  });
+
+  it("admin client reads across tenants (positive bypass — for the audit-log viewer per ADR-0011 threats)", async () => {
+    const { admin } = requireClients();
+    // Both rows from the findMany test above are still in the DB; admin
+    // sees them all without a tenant context.
+    const all = await admin.engagementStrictness.findMany();
+    const tenants = new Set(all.map((r) => r.tenantId));
+    expect(tenants.has(tenant1Id)).toBe(true);
+    expect(tenants.has(tenant2Id)).toBe(true);
+  });
+
+  it("RLS blocks cross-tenant reads at the database layer (defence-in-depth)", async () => {
+    const { admin } = requireClients();
+    if (!container) throw new Error("Container not started.");
+
+    // The aims_app role + grants were created by the earlier RLS test in this
+    // file; we re-apply only what's specific to the new table to be safe in
+    // any test ordering. (DO blocks are idempotent.)
+    await admin.$executeRawUnsafe(`
+      DO $$
+      BEGIN
+        IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'aims_app') THEN
+          GRANT SELECT, INSERT, UPDATE, DELETE ON "public"."engagement_strictness" TO aims_app;
+        END IF;
+      END $$;
+    `);
+
+    const { Client } = await import("pg");
+    const appClient = new Client({
+      host: container.getHost(),
+      port: container.getPort(),
+      user: "aims_app",
+      password: "test_app_pw",
+      database: "aims_test",
+    });
+    await appClient.connect();
+
+    try {
+      // No tenant context → policy excludes every row.
+      const noContext = await appClient.query<{ id: string }>(
+        `SELECT id FROM public.engagement_strictness`,
+      );
+      expect(noContext.rows).toHaveLength(0);
+
+      // Set tenant1 context → see only tenant1's rows.
+      await appClient.query(
+        `SELECT set_config('app.current_tenant', $1, FALSE)`,
+        [tenant1Id],
+      );
+      const t1Rows = await appClient.query<{ tenantId: string }>(
+        `SELECT "tenantId" FROM public.engagement_strictness`,
+      );
+      expect(t1Rows.rows.length).toBeGreaterThan(0);
+      expect(t1Rows.rows.every((r) => r.tenantId === tenant1Id)).toBe(true);
+
+      // INSERT with mismatched tenantId → WITH CHECK blocks it.
+      const eng = await seedEngagement(tenant1Id, "strictness-rls-hijack");
+      await expect(
+        appClient.query(
+          `INSERT INTO public.engagement_strictness
+             (id, "tenantId", "engagementId", "retentionYears", "coolingOffMonths",
+              "documentationRequirements", "requiredCanonicalCodes", "drivenBy",
+              "createdAt", "updatedAt")
+           VALUES ('rls-hijack-strictness', $1, $2, 7, 24, '{}'::jsonb, ARRAY[]::TEXT[], '[]'::jsonb, NOW(), NOW())`,
+          [tenant2Id, eng],
+        ),
+      ).rejects.toThrow(/row-level security|policy/i);
+    } finally {
+      await appClient.end();
+    }
+  });
+});
+
 describe("audit log hash chain", () => {
   type VerifyResult = {
     ok: boolean;

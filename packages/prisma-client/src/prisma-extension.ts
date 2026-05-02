@@ -38,8 +38,8 @@ const CROSS_TENANT_MODELS: ReadonlySet<string> = new Set(["StandardPack"]);
 const TENANT_MODEL = "Tenant";
 
 /**
- * Tenant-scoped models — must have a `tenantId` column. Matches the 13 models
- * beyond Tenant + StandardPack in the Slice A schema.
+ * Tenant-scoped models — must have a `tenantId` column. Slice A added 12;
+ * Slice B adds `EngagementStrictness` (per ADR-0011).
  */
 const TENANT_SCOPED_MODELS: ReadonlySet<string> = new Set([
   "User",
@@ -48,6 +48,7 @@ const TENANT_SCOPED_MODELS: ReadonlySet<string> = new Set([
   "SessionBlocklist",
   "Engagement",
   "PackAttachment",
+  "EngagementStrictness",
   "Finding",
   "ApprovalRequest",
   "Report",

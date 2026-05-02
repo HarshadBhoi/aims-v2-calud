@@ -297,6 +297,7 @@ model Engagement {
   attachments PackAttachment[]
   findings    Finding[]
   reports     Report[]
+  strictness  EngagementStrictness?
 
   // Optimistic concurrency.
   version Int @default(1) @map("_version")
@@ -329,6 +330,50 @@ model PackAttachment {
   @@unique([engagementId, packCode, packVersion])
   @@index([tenantId])
   @@map("pack_attachments")
+  @@schema("public")
+}
+
+/// Resolved-rule snapshot for an engagement, derived from its attached packs
+/// by the strictness resolver and idempotently rewritten on
+/// `pack.attach` / `pack.detach` / `pack.swapPrimary`. Per ADR-0011: separate
+/// table (not JSONB on Engagement) for RLS clarity, indexable rule columns,
+/// and a clean home for a future `EngagementStrictnessOverride` sibling.
+/// Row history is *not* kept here — the audit log carries it via
+/// `strictness.resolved` events; this row is the canonical current state.
+///
+/// Slice B introduces this. Slice A engagements get a row populated on the
+/// resolver's first run via the seed-migration backfill.
+model EngagementStrictness {
+  id           String     @id @default(cuid())
+  tenantId     String
+  engagementId String     @unique
+  engagement   Engagement @relation(fields: [engagementId], references: [id], onDelete: Cascade)
+
+  // Canonical rule columns — per docs/06 §1.8 and Slice B plan §10 scope.
+  // Values are the *effective* rule after resolution across attached packs.
+  retentionYears   Int
+  coolingOffMonths Int
+  cpeHours         Int?
+  // Full DocumentationRequirements shape (per packages/validation/src/pack.ts).
+  documentationRequirements Json
+  // Union of canonical codes any attached pack requires for finding completion.
+  requiredCanonicalCodes String[]
+
+  /// Per-rule audit trail; shape:
+  ///   `{ rule: string; value: unknown; source: { packCode, packVersion, direction } }[]`
+  /// `direction` is the `max` / `min` / `union` / `override_required` strictness
+  /// direction the resolver applied. Lets a future viewer answer "why is our
+  /// retention 7 years?" without recomputing.
+  drivenBy Json
+
+  // Optimistic concurrency. Bumped on every resolver re-run.
+  version Int @default(1) @map("_version")
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([tenantId])
+  @@map("engagement_strictness")
   @@schema("public")
 }
 
