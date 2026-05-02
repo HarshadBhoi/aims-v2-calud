@@ -1,6 +1,6 @@
 # AIMS v2 — Vertical Slice Plan (Slice B: Multi-Standard Rendering)
 
-**Status**: Draft · 2026-05-01
+**Status**: Draft (rev 2, post-Gemini review) · 2026-05-01
 **Purpose**: Retire the central architectural risk Slice A deliberately deferred — that *the same finding renders correctly under two methodologies' vocabularies, driven by data, not branched code*. If this fails, "multi-standard" is marketing, not architecture.
 
 This is a narrower slice than A. Substrate, auth, finding loop, report+PDF, OTel, audit log, e2e harness — all already proven in [`VERTICAL-SLICE-PLAN.md`](VERTICAL-SLICE-PLAN.md). Slice B reuses every layer; the new code is concentrated in the pack resolver, the cross-pack renderer, and the multi-report path.
@@ -34,7 +34,9 @@ The journey ends with two PDFs in S3 that a GAGAS reader and an IIA reader would
 - Each report's compliance statement is wired from `attestsTo` + `conformanceClaimed` packs, not hand-edited.
 - Two PDFs land in S3 with distinct content hashes, distinct presigned-download flows, and distinct audit-log entries.
 - Pack annotation overlays — `tighten` / `override_required` / `loosen` — exercised in **at least one** integration test (does not need a UI surface).
-- One `equivalenceStrength: 'partial'` mapping path tested end-to-end (warning surfaced, render falls through to fallback).
+- Equivalence-strength rendering is pinned: `exact` renders verbatim with the target pack's label; `close` renders verbatim with a "(rendered under {sourcePack} mapping)" footer note; `partial` renders the target pack's `fallbackPrompt` and surfaces a warning event in the audit log. The IIA pack's `RECOMMENDATION` mapping is `close` ([iia-gias-2024.ts:715-720](data-model/examples/iia-gias-2024.ts#L715-L720)) so this path is exercised naturally; one synthetic `partial`-equivalence test covers the fallback path.
+- **Resolver determinism is testable**: `resolve([A,B])` and `resolve([B,A])` produce equal `EngagementStrictness` rows (resolution is order-independent across secondary packs); when ties exist, the engagement's `primaryMethodology` dominates. Property test in W1.
+- **Required-element completion is the union** of all attached packs' required canonical codes (per the strictness resolver's `union` direction in `docs/06 §1.8`). A finding is `complete` only when every code required by *any* attached pack has a non-empty value. UI labels resolve from `primaryMethodology.findingElements`; storage keys are canonical (per ADR-0010).
 - 105 → ~140 integration tests passing. Slice-A e2e + a new "slice-B journey" e2e green.
 
 ### 1.3 What is explicitly OUT of this slice
@@ -77,8 +79,8 @@ Two ADRs are quietly load-bearing here: ADR-0002 (the `EngagementStrictness` tab
 
 Reuse 13/13 from Slice A. New + changed:
 
-- **New: `EngagementStrictness`** — keyed by `engagementId`; columns for each canonical rule (retention, cooling-off, cpe-hours, doc-requirements, etc.) plus a JSONB `drivenBy` trail (`{ rule: string, value: any, source: { packCode, packVersion, direction } }[]`). Bumped on resolver re-run; never deleted (history preserved).
-- **Changed: `Finding.elements`** — JSONB shape migrates from pack-element-code keys to canonical-code keys. Migration script translates existing slice-A findings via the GAGAS-2024 mapping (4 keys, all `exact`) — zero data loss for slice-A test data.
+- **New: `EngagementStrictness`** — separate model per [ADR-0011](references/adr/0011-engagement-strictness-persistence.md). Keyed by `engagementId`; columns for each canonical rule (retention, cooling-off, CPE hours, doc-requirements, finding-element-required-codes) plus a JSONB `drivenBy` trail (`{ rule, value, source: { packCode, packVersion, direction } }[]`). Idempotent overwrite on resolver re-run; current state is the table, history lives in the audit log via `strictness.resolved` events. RLS policy mirrors `Engagement` per ADR-0002.
+- **Changed: `Finding.elementValuesCipher`** — storage shape changes from pack-element-code keys to canonical semantic codes per [ADR-0010](references/adr/0010-canonical-finding-storage-shape.md). Note that this is **ALE-encrypted (per ADR-0001)**, not raw JSONB — so the migration is *not* a Prisma migration. It is an application-layer script that, per tenant, decrypts each finding's payload with the tenant's wrapped DEK, translates keys via the resolved primary pack's `semanticElementMappings`, re-encrypts, and writes back atomically inside a per-finding transaction (with `version` bump for optimistic-concurrency safety against concurrent edits during migration). Rollback path = the inverse mapping (lossless for slice-A's GAGAS-2024 seed since all four mappings are `exact`). Dry-run mode required; KMS-call rate-limit awareness required even at slice scale (~50 findings × N tenants).
 - **Changed: `Report.attestsTo`** — already exists; re-validate that it accepts any *attached* pack on the engagement (not just primary).
 - **Changed: `Report` unique constraint** — relax to `(engagementId, attestsToPackCode, attestsToPackVersion)` so two reports against the same engagement can coexist if they attest to different packs.
 
@@ -87,7 +89,7 @@ Reuse 13/13 from Slice A. New + changed:
 - `pack.attach` — accept ≥1 pack; enforce one-and-only-one `primaryMethodology`; allow multiple `additionalMethodologies`; trigger strictness re-resolve.
 - `pack.detach` — re-resolve strictness; reject if any report is mid-flight against the detaching pack.
 - `engagement.strictness` (new) — return computed effective rules + `drivenBy` trail. Read-only.
-- `finding.create` / `finding.updateElement` — element keys validated against the **canonical** dictionary, not against the resolved pack's `findingElements`. The resolved-pack list determines *which* canonical codes are required for completion (its `semanticElementMappings` declare what it needs to render).
+- `finding.create` / `finding.updateElement` — element keys validated against the **canonical** dictionary, not against the resolved pack's `findingElements` (per ADR-0010). The **union** of every attached pack's required canonical codes determines completion (per ADR-0011's `EngagementStrictness.findingElementRequiredCodes`). API contract during the W1 transition window accepts either pack-element-codes or canonical codes; canonical-only after W4 (per ADR-0010 rollout phase 4).
 - `report.create` — `attestsTo` must be one of the engagement's attached packs (and have `conformanceClaimed: true` for compliance-statement assembly).
 - `report.compliance` (new) — return the assembled "conducted in accordance with…" sentence for a report.
 - `report.signoff` (existing) — unchanged signature, but the rendered PDF (in the worker) now goes through the cross-pack translator.
@@ -109,13 +111,16 @@ Same two state machines as Slice A (finding approve, report sign), unchanged. Ne
 
 ### Week 1 — Resolver + storage migration
 
-- Extend `resolvePackRequirements` to handle ≥1 pack with strictness direction (`max` / `min` / `union` / `override_required`). Drop the `NOT_IMPLEMENTED` branch.
-- Add `EngagementStrictness` table; Prisma migration; RLS policy mirroring `Engagement`'s pattern.
-- Migrate `Finding.elements` JSONB shape: write a one-shot script that translates pack-element-code keys to canonical-code keys for any existing finding. Test on the slice-A seed.
-- Unit tests for resolver across all four directions; property test that union is order-independent.
-- `engagement.strictness` tRPC procedure.
+W1 is the heaviest week; all of Slice B's foundational data-shape work lands here. The encrypted-migration in particular is *not* a one-shot script — it threads through ALE per ADR-0001 and needs careful atomicity.
 
-**Exit W1**: Multi-pack attach works; strictness table populates; existing slice-A e2e still green after the storage migration.
+- **Day 1** — Schema + RLS for `EngagementStrictness` (per ADR-0011 rollout phases 1-2): Prisma model, tenant-extension scoping, Prisma migration, RLS policy mirroring `Engagement`'s pattern, integration test for cross-tenant denial.
+- **Day 2-3** — Resolver write path: extend `resolvePackRequirements` to handle ≥1 pack with strictness direction (`max` / `min` / `union` / `override_required`); drop the `NOT_IMPLEMENTED` branch; rename to `resolveAndPersist`; wrap `pack.attach`/`pack.detach` in a transaction with the strictness write. Property test that `resolve([A,B])` and `resolve([B,A])` produce equal rows (order-independence) and that `primaryMethodology` dominates ties.
+- **Day 4-6** — `Finding.elementValuesCipher` migration script (per ADR-0010 rollout phase 1): per-tenant DEK loop, per-finding atomic transaction (decrypt → translate → re-encrypt → version-bump), dry-run mode, idempotent (running twice on a fresh tenant doesn't corrupt), inverse-mapping rollback path tested against slice-A seed, KMS-call rate-limit awareness (batch DEK unwrap once per tenant rather than per finding). Integration test: run on slice-A seed, verify all 50 seed findings round-trip through `finding.update` cleanly.
+- **Day 7** — API contract update (per ADR-0010 rollout phase 2): `finding.create` and `finding.updateElement` accept either pack-element-codes or canonical codes; server normalizes to canonical; deprecation warning logged on pack-code submission. `engagement.strictness` tRPC procedure (read-only, returns the persisted row + drivenBy trail).
+
+**Exit W1**: Multi-pack attach works; strictness rows persist with correct drivenBy across order permutations; all slice-A findings have been atomically migrated to canonical-code storage and the slice-A e2e still passes; `finding.create` accepts canonical codes alongside pack codes during the transition window.
+
+**W1 explicit non-goals**: cross-pack rendering (W2), multi-report UI (W3), annotation overlays (W3). Don't drift.
 
 ### Week 2 — Cross-pack rendering
 
@@ -230,13 +235,14 @@ The slice **fails** if cross-pack rendering requires an `if (pack.code === 'GAGA
 
 ## 10. Decision points before starting
 
-These are the gates I'd want pinned before W1 starts:
+The plan went through one round of external review (Gemini, 2026-05-01) before this revision; what came back is reflected in §1.2 (pinned acceptance criteria), §3.1 (corrected migration shape), §4 W1 (re-budgeted day-by-day), and the two new ADRs in §11. The remaining gates are below — pinned where the review either agreed or where the trade-off is now explicit.
 
-1. **Pack pair confirmed**: GAGAS-2024.1 + IIA-GIAS-2024.1 (recommended) vs. an alternate pair? The IIA pack already has 5 mappings (one `close`), which is the most informative test surface.
-2. **Strictness resolver scope**: which rules are in-scope for the `EngagementStrictness` table? Recommendation: retention, cooling-off, CPE-hours, doc-requirements (the four already named in `docs/06 §1.8`). Anything else punts to slice C.
-3. **Finding storage migration**: in-place JSONB rewrite (recommended) vs. dual-write transition (more work, no value at this scale).
-4. **`pack-renderer` package extraction now or later**: extract immediately (recommended — `apps/api` *and* `apps/worker` are both consumers) vs. keep in `apps/api` and copy.
-5. **Stretch**: should W4 buffer pull in Single-Audit overlay as a third pack? Recommendation: **no**. Three-pack rendering retires no architectural risk that two-pack rendering doesn't already retire.
+1. **Pack pair confirmed**: GAGAS-2024.1 + IIA-GIAS-2024.1. **Pinned.** The IIA pack has 5 mappings, one `close` ([iia-gias-2024.ts:715-720](data-model/examples/iia-gias-2024.ts#L715-L720)), which exercises the cross-pack render path naturally. Alternates carry no extra signal.
+2. **Strictness resolver scope**: retention, cooling-off, CPE-hours, doc-requirements, and the union of required canonical codes (the fifth driven by the `findingElements` rule in `docs/06 §1.8`). **Pinned.** Anything else punts to Slice C.
+3. **Finding storage shape & migration**: canonical-code-keyed at the encrypted-payload layer, normalized at write time. **Pinned via [ADR-0010](references/adr/0010-canonical-finding-storage-shape.md).** Migration is the per-tenant decrypt-translate-re-encrypt script in §4 W1 day 4-6 (not a Prisma migration); rollback is the inverse mapping (lossless for slice-A's `exact`-only seed).
+4. **`EngagementStrictness` persistence**: separate Prisma model with RLS per ADR-0002; idempotent overwrite on resolver re-run; history lives in the audit log via `strictness.resolved` events. **Pinned via [ADR-0011](references/adr/0011-engagement-strictness-persistence.md).** Tenant overrides (`EngagementStrictnessOverride`) are a future bolt-on the table shape doesn't preclude.
+5. **`pack-renderer` package extraction**: extract immediately to `packages/pack-renderer/` per slice-A delta `3.1` (the "extract when there's a second consumer" criterion is met by `apps/api` + `apps/worker`). **Reviewed and held as a build-time choice — no ADR.** The slice-A delta's framing is the explicit justification; promoting to ADR ceremony would add no signal a future engineer couldn't recover from `git log --grep`.
+6. **Stretch — Single-Audit overlay as a third pack in W4 buffer**: **no.** Three-pack rendering retires no architectural risk that two-pack rendering doesn't already retire; the regulatory-overlay axis is a Slice C question. Holding the line on this is exactly the scope-creep CLAUDE.md §6 warns about.
 
 ---
 
@@ -260,8 +266,9 @@ Carries forward Slice A's deferral list. New items surfaced by Slice B's scoping
 - [`data-model/standard-pack-schema.ts`](data-model/standard-pack-schema.ts) — `semanticElementMappings`, `equivalenceStrength`, `findingElements` definitions.
 - [`data-model/examples/gagas-2024.ts`](data-model/examples/gagas-2024.ts) and [`iia-gias-2024.ts`](data-model/examples/iia-gias-2024.ts) — the two packs Slice B exercises.
 - [`apps/api/src/packs/resolver.ts`](apps/api/src/packs/resolver.ts) — the existing single-pack resolver, structured for Slice B extension.
-- ADR-0002 (RLS pattern for the new strictness table), ADR-0008/0009 (Accepted but not exercised in slice B; Slice C territory).
+- [`apps/api/src/routers/finding.ts`](apps/api/src/routers/finding.ts) — current pack-element-code-bound storage and validation; the encryption boundary at lines 60-90, 160-185, 350-360 is the migration's load-bearing surface.
+- ADR-0001 (ALE per-tenant DEK; binds Slice B's migration shape), ADR-0002 (RLS pattern for the new strictness table), [ADR-0010](references/adr/0010-canonical-finding-storage-shape.md) (canonical finding storage shape; load-bearing for W1), [ADR-0011](references/adr/0011-engagement-strictness-persistence.md) (`EngagementStrictness` table shape; load-bearing for W1), ADR-0008/0009 (Accepted but not exercised in slice B; Slice C territory).
 
 ---
 
-*This is a draft. Slice A's plan went through one round of pinning before W1 started; Slice B should too — see §10 for the gates.*
+*Draft revised 2026-05-01 against Gemini's external review. The §10 gates are pinned; W1 starts when you're ready.*

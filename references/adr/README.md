@@ -38,6 +38,8 @@ The narrative decision log in [`docs/06-design-decisions.md`](../../docs/06-desi
 | [0007](0007-api-versioning-hybrid.md) | API versioning — URL-based majors + dated header minors, tRPC unversioned | Accepted | 2026-04-20 | #api #versioning #integrations |
 | [0008](0008-control-matrix-as-separate-model.md) | Control Matrix (PRCM) as a separate model upstream of Audit Tests | Accepted | 2026-04-28 | #database #data-model #internal-audit #sox #fieldwork |
 | [0009](0009-risk-assessment-history-table.md) | Risk Assessment as a per-fiscal-year history table | Accepted | 2026-04-28 | #database #data-model #risk #internal-audit #planning |
+| [0010](0010-canonical-finding-storage-shape.md) | Findings store element values keyed by canonical semantic codes, normalized at write time | Proposed | 2026-05-01 | #data-model #multi-standard #api #encryption |
+| [0011](0011-engagement-strictness-persistence.md) | EngagementStrictness as a separate RLS-bound table, idempotently rewritten on resolve | Proposed | 2026-05-01 | #data-model #multi-standard #database #rls |
 
 ## Numbering convention
 
