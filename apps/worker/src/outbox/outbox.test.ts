@@ -253,6 +253,12 @@ async function seedSignedReportVersion(): Promise<{
   const cipher = await encryption.encryptJson(tenantId, SLICE_SECTIONS);
   const contentHash = computeReportContentHash(SLICE_SECTIONS);
 
+  // Slice B W3.1: Reports unique on (engagementId, attestsToPackCode,
+  // attestsToPackVersion). The test fixtures share an engagement across
+  // tests, so clean up prior reports on the same engagement before
+  // creating a fresh one. Cascade deletes the ReportVersion(s).
+  await prisma.report.deleteMany({ where: { engagementId } });
+
   const report = await prisma.report.create({
     data: {
       tenantId,

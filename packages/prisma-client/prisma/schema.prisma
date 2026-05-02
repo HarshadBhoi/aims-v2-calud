@@ -534,6 +534,15 @@ model Report {
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
+  /// Slice B (per VERTICAL-SLICE-B-PLAN §3.1, W3 day 1): an engagement may
+  /// produce at most one report per (attestsToPackCode, attestsToPackVersion)
+  /// pair. Multi-report-per-engagement is supported (one GAGAS report +
+  /// one IIA report on the same engagement is fine), but two GAGAS-2024.1
+  /// reports on the same engagement is rejected — the duplicate would be
+  /// confusing and the auditor probably meant to amend the existing report.
+  /// Future amendment flows will extend this with a versioning column;
+  /// until then the constraint catches accidental dupes cleanly.
+  @@unique([engagementId, attestsToPackCode, attestsToPackVersion])
   @@index([tenantId, engagementId])
   @@index([tenantId, status])
   @@map("reports")

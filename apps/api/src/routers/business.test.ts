@@ -2263,6 +2263,39 @@ describe("report router — cross-pack rendering (slice B W2.5)", () => {
     expect(gagasReport.sections["findings_summary"]?.content).toContain("[SIGNIFICANT]");
   });
 
+  it("rejects a second report with the SAME attestsTo on the same engagement (W3 day 1)", async () => {
+    // The W3-day-1 unique constraint at (engagementId, attestsToPackCode,
+    // attestsToPackVersion) catches "the auditor accidentally clicked Create
+    // twice" cleanly. Duplicate attempt → CONFLICT, not a silent second row.
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const { engagementId } = await setupMultiPackWithFinding("dupe-attests");
+
+    await caller.report.create({
+      engagementId,
+      title: "First GAGAS report",
+      attestsToPackCode: "GAGAS",
+      attestsToPackVersion: "2024.1",
+    });
+    await expect(
+      caller.report.create({
+        engagementId,
+        title: "Second GAGAS report — duplicate",
+        attestsToPackCode: "GAGAS",
+        attestsToPackVersion: "2024.1",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    // Cross-pack pair still works: GAGAS + IIA on the same engagement.
+    const iia = await caller.report.create({
+      engagementId,
+      title: "IIA report — different attestsTo",
+      attestsToPackCode: "IIA-GIAS",
+      attestsToPackVersion: "2024.1",
+    });
+    expect(iia.id).toBeTruthy();
+  });
+
   it("rejects attestsTo for a pack not attached to the engagement", async () => {
     const { services } = requireSetup();
     const caller = appRouter.createCaller(makeAuthedContext(services));

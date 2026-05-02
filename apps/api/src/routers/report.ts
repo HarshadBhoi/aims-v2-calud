@@ -102,33 +102,50 @@ export const reportRouter = router({
 
       const templateKey = input.templateKey ?? DEFAULT_TEMPLATE_KEY;
 
-      const [report, draftVersion] = await ctx.services.prismaTenant.$transaction(
-        async (tx) => {
-          const r = await tx.report.create({
-            // @ts-expect-error — tenantId injected at runtime by our extension.
-            data: {
-              engagementId: input.engagementId,
-              templateKey,
-              title: input.title,
-              authorId: ctx.session.userId,
-              attestsToPackCode: attestsTo.packCode,
-              attestsToPackVersion: attestsTo.packVersion,
-            },
+      try {
+        const [report, draftVersion] = await ctx.services.prismaTenant.$transaction(
+          async (tx) => {
+            const r = await tx.report.create({
+              // @ts-expect-error — tenantId injected at runtime by our extension.
+              data: {
+                engagementId: input.engagementId,
+                templateKey,
+                title: input.title,
+                authorId: ctx.session.userId,
+                attestsToPackCode: attestsTo.packCode,
+                attestsToPackVersion: attestsTo.packVersion,
+              },
+            });
+            const v = await tx.reportVersion.create({
+              // @ts-expect-error — tenantId injected at runtime by our extension.
+              data: {
+                reportId: r.id,
+                versionNumber: DEFAULT_VERSION_NUMBER,
+                isDraft: true,
+                contentCipher: cipher,
+              },
+            });
+            return [r, v] as const;
+          },
+        );
+        return toDetail(report, draftVersion, sections);
+      } catch (err) {
+        // Per W3 day 1: an engagement may have at most one report per
+        // (attestsToPackCode, attestsToPackVersion) pair. The DB enforces
+        // this via the unique index added in migration
+        // 20260502045000_add_report_attests_to_unique. Surface as CONFLICT
+        // so clients can offer to amend the existing report instead.
+        if (isPrismaUniqueViolation(err)) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              `A report attesting to ${attestsTo.packCode}:${attestsTo.packVersion} ` +
+              `already exists on this engagement. To revise it, edit the existing ` +
+              `report; to attest to a different pack, change attestsTo.`,
           });
-          const v = await tx.reportVersion.create({
-            // @ts-expect-error — tenantId injected at runtime by our extension.
-            data: {
-              reportId: r.id,
-              versionNumber: DEFAULT_VERSION_NUMBER,
-              isDraft: true,
-              contentCipher: cipher,
-            },
-          });
-          return [r, v] as const;
-        },
-      );
-
-      return toDetail(report, draftVersion, sections);
+        }
+        throw err;
+      }
     }),
 
   // ─── get ────────────────────────────────────────────────────────────────
@@ -540,6 +557,15 @@ function assertEditable(actual: ReportStatusInput, action: string): void {
       message: `${action} requires DRAFT status (current: ${actual}).`,
     });
   }
+}
+
+function isPrismaUniqueViolation(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    err.code === "P2002"
+  );
 }
 
 // ─── Section helpers ───────────────────────────────────────────────────────
