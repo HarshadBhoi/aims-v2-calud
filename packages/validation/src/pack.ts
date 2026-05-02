@@ -8,6 +8,35 @@ import { CuidString } from "./common";
 
 // ─── Inputs ────────────────────────────────────────────────────────────────
 
+/**
+ * Slice B W3.6-7 (per VERTICAL-SLICE-B-PLAN §1.2): per-engagement
+ * annotation that overlays a pack's default rule. Three directions:
+ *
+ *   - `tighten`           — pick max(pack base, annotation value).
+ *   - `override_required` — replace pack base unconditionally.
+ *   - `loosen`            — relax a rule. Rejected at attach time on
+ *                           `conformanceClaimed=true` packs (can't
+ *                           loosen a standard while claiming
+ *                           conformance to it).
+ *
+ * Slice B exercises numeric rules only:
+ *   `retentionYears` | `coolingOffMonths` | `cpeHours`
+ * Finding-element / classification annotations are slice C.
+ */
+export const PackAnnotationDirection = z.enum([
+  "tighten",
+  "override_required",
+  "loosen",
+]);
+export type PackAnnotationDirection = z.infer<typeof PackAnnotationDirection>;
+
+export const PackAnnotation = z.object({
+  rule: z.enum(["retentionYears", "coolingOffMonths", "cpeHours"]),
+  direction: PackAnnotationDirection,
+  value: z.number().int().nonnegative(),
+});
+export type PackAnnotation = z.infer<typeof PackAnnotation>;
+
 export const AttachPackInput = z.object({
   engagementId: CuidString,
   packCode: z.string().min(1).max(64),
@@ -20,6 +49,10 @@ export const AttachPackInput = z.object({
    * Use `pack.swapPrimary` to change which attachment is primary.
    */
   isPrimary: z.boolean().optional(),
+  /**
+   * Slice B W3.6-7: optional pack-annotation overlays. See PackAnnotation.
+   */
+  annotations: z.array(PackAnnotation).optional(),
 });
 export type AttachPackInput = z.infer<typeof AttachPackInput>;
 

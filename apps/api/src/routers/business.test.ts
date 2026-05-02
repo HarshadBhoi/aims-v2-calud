@@ -777,6 +777,101 @@ describe("pack router — multi-pack + primary lifecycle (slice B W1.2-3)", () =
       caller.pack.strictness({ engagementId: engId }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
+
+  // ─── Slice B W3.6-7: pack annotation overlays ───────────────────────────
+
+  it("annotation tighten: pack base 7y → strictness retention 10y, drivenBy cites annotation", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const engId = await freshEngagement("ann-tighten");
+
+    await caller.pack.attach({
+      engagementId: engId,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+      annotations: [{ rule: "retentionYears", direction: "tighten", value: 10 }],
+    });
+
+    const strictness = await caller.pack.strictness({ engagementId: engId });
+    // GAGAS base = 7; tighten annotation = 10 → max(7, 10) = 10.
+    expect(strictness.retentionYears).toBe(10);
+
+    // drivenBy entry for retentionYears should cite annotation_tighten.
+    const drivenBy = strictness.drivenBy as {
+      rule: string;
+      value: unknown;
+      source: { packCode: string; packVersion: string; direction: string };
+    }[];
+    const retEntry = drivenBy.find((e) => e.rule === "retentionYears");
+    expect(retEntry?.value).toBe(10);
+    expect(retEntry?.source.direction).toBe("annotation_tighten");
+    expect(retEntry?.source.packCode).toBe("GAGAS");
+  });
+
+  it("annotation tighten: ignored when annotation value < pack base", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const engId = await freshEngagement("ann-tighten-noop");
+
+    await caller.pack.attach({
+      engagementId: engId,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+      // Tighten lower than base — slice B's resolver only applies tighten
+      // when it's actually stricter (annotation value > base for these
+      // monotonic-stricter-as-larger rules).
+      annotations: [{ rule: "retentionYears", direction: "tighten", value: 3 }],
+    });
+
+    const strictness = await caller.pack.strictness({ engagementId: engId });
+    expect(strictness.retentionYears).toBe(7); // GAGAS base wins.
+    const drivenBy = strictness.drivenBy as {
+      rule: string;
+      source: { direction: string };
+    }[];
+    const retEntry = drivenBy.find((e) => e.rule === "retentionYears");
+    expect(retEntry?.source.direction).toBe("max"); // pack-base direction.
+  });
+
+  it("annotation override_required: replaces base unconditionally", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const engId = await freshEngagement("ann-override");
+
+    await caller.pack.attach({
+      engagementId: engId,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+      annotations: [
+        // Override to 5 — even though it's lower than the base of 7.
+        { rule: "retentionYears", direction: "override_required", value: 5 },
+      ],
+    });
+
+    const strictness = await caller.pack.strictness({ engagementId: engId });
+    expect(strictness.retentionYears).toBe(5);
+    const drivenBy = strictness.drivenBy as {
+      rule: string;
+      source: { direction: string };
+    }[];
+    const retEntry = drivenBy.find((e) => e.rule === "retentionYears");
+    expect(retEntry?.source.direction).toBe("annotation_override");
+  });
+
+  it("annotation loosen: rejected on conformance-claimed pack at attach time", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const engId = await freshEngagement("ann-loosen-rejected");
+
+    await expect(
+      caller.pack.attach({
+        engagementId: engId,
+        packCode: "GAGAS",
+        packVersion: "2024.1",
+        annotations: [{ rule: "retentionYears", direction: "loosen", value: 3 }],
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
 });
 
 describe("finding router", () => {

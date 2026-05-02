@@ -343,6 +343,21 @@ model PackAttachment {
   /// reference but not conformance-claimed" use case can flip this to false.
   conformanceClaimed Boolean @default(true)
 
+  /// Slice B W3.6-7 (per VERTICAL-SLICE-B-PLAN §1.2): per-engagement
+  /// overlay rules that override the pack's defaults. JSON array of
+  /// `{ rule, direction, value }` where `direction` is one of:
+  ///   - `tighten`           — pick max of pack base and annotation
+  ///                           (annotations can only make things stricter)
+  ///   - `override_required` — replace the pack base unconditionally
+  ///   - `loosen`            — relax a rule (rejected on
+  ///                           conformanceClaimed=true packs at attach time;
+  ///                           you can't loosen GAGAS while claiming
+  ///                           conformance to it)
+  /// Example: `[{ rule: "retentionYears", direction: "tighten", value: 10 }]`
+  /// Slice B exercises numeric rules only (retentionYears, coolingOffMonths,
+  /// cpeHours); finding-element annotations are slice C territory.
+  annotations Json?
+
   attachedAt DateTime @default(now()) @db.Timestamptz(6)
   attachedBy String
 

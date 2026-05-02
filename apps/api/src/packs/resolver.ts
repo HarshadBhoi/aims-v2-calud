@@ -51,15 +51,30 @@ export type ExpectedPackContent = {
   cpeRequirements?: { requiredHoursPerCycle?: number | null };
 };
 
+/** A pack annotation overlay (slice B W3.6-7, per slice plan §1.2). */
+export type PackAnnotation = {
+  rule: "retentionYears" | "coolingOffMonths" | "cpeHours";
+  direction: "tighten" | "override_required" | "loosen";
+  value: number;
+};
+
 /** A single attached pack as the resolver consumes it. */
 export type PackInput = {
   packCode: string;
   packVersion: string;
   isPrimary: boolean;
   content: ExpectedPackContent;
+  /** Slice B W3.6-7: per-engagement annotation overlays. */
+  annotations?: PackAnnotation[];
 };
 
-export type StrictnessDirection = "max" | "min" | "union" | "override_required";
+export type StrictnessDirection =
+  | "max"
+  | "min"
+  | "union"
+  | "override_required"
+  | "annotation_tighten"
+  | "annotation_override";
 
 export type DrivenByEntry = {
   rule: string;
@@ -138,9 +153,19 @@ export function resolveStrictness(packs: readonly PackInput[]): StrictnessResolu
   // Per-rule resolution. For every "max" rule, primary wins ties (slice plan
   // §1.2 invariant). The `pickMaxDriver` helper centralizes this.
 
-  const retention = pickMaxDriver(sorted, (p) => p.content.documentationRequirements?.retentionYears);
-  const cooling = pickMaxDriver(sorted, (p) => p.content.independenceRules?.coolingOffPeriodMonths);
-  const cpe = pickMaxNullableDriver(sorted, (p) => p.content.cpeRequirements?.requiredHoursPerCycle);
+  const retentionBase = pickMaxDriver(sorted, (p) => p.content.documentationRequirements?.retentionYears);
+  const coolingBase = pickMaxDriver(sorted, (p) => p.content.independenceRules?.coolingOffPeriodMonths);
+  const cpeBase = pickMaxNullableDriver(sorted, (p) => p.content.cpeRequirements?.requiredHoursPerCycle);
+
+  // Slice B W3.6-7: layer per-attachment annotations on top of the
+  // pack-base values. tighten = max(base, annotation); override_required =
+  // unconditional replace; loosen = no-op for slice B (the API gate at
+  // attach time rejects loosen on conformanceClaimed=true packs; for
+  // non-conformance-claimed packs slice B doesn't yet implement min-pick
+  // semantics).
+  const retention = applyAnnotations(retentionBase, sorted, "retentionYears");
+  const cooling = applyAnnotations(coolingBase, sorted, "coolingOffMonths");
+  const cpe = applyNullableAnnotations(cpeBase, sorted, "cpeHours");
 
   // documentationRequirements — per-field merge:
   //   fourElementComplete:        OR (any pack requires → required)
@@ -189,27 +214,28 @@ export function resolveStrictness(packs: readonly PackInput[]): StrictnessResolu
   }
   const requiredCanonicalCodes = [...codeContributors.keys()].sort();
 
-  // drivenBy trail.
+  // drivenBy trail. When an annotation overlay applied, cite the annotated
+  // attachment + the annotation direction; otherwise the pack-base direction.
   const drivenBy: DrivenByEntry[] = [];
   if (retention.driver !== null) {
     drivenBy.push({
       rule: "retentionYears",
       value: retention.value,
-      source: { ...packRef(retention.driver), direction: "max" },
+      source: { ...packRef(retention.driver), direction: retention.direction ?? "max" },
     });
   }
   if (cooling.driver !== null) {
     drivenBy.push({
       rule: "coolingOffMonths",
       value: cooling.value,
-      source: { ...packRef(cooling.driver), direction: "max" },
+      source: { ...packRef(cooling.driver), direction: cooling.direction ?? "max" },
     });
   }
   if (cpe.driver !== null) {
     drivenBy.push({
       rule: "cpeHours",
       value: cpe.value,
-      source: { ...packRef(cpe.driver), direction: "max" },
+      source: { ...packRef(cpe.driver), direction: cpe.direction ?? "max" },
     });
   }
   if (fourElementDriver !== null) {
@@ -299,6 +325,9 @@ export async function resolveAndPersist(
     packVersion: a.packVersion,
     isPrimary: a.isPrimary,
     content: a.pack.packContent as ExpectedPackContent,
+    ...(a.annotations !== null
+      ? { annotations: a.annotations as PackAnnotation[] }
+      : {}),
   }));
 
   const resolution = resolveStrictness(inputs);
@@ -359,6 +388,9 @@ export async function resolvePackRequirements(
     packVersion: a.packVersion,
     isPrimary: a.isPrimary,
     content: a.pack.packContent as ExpectedPackContent,
+    ...(a.annotations !== null
+      ? { annotations: a.annotations as PackAnnotation[] }
+      : {}),
   }));
   return resolveStrictness(inputs).resolved;
 }
@@ -367,6 +399,106 @@ export async function resolvePackRequirements(
 
 function packRef(p: PackInput): { packCode: string; packVersion: string } {
   return { packCode: p.packCode, packVersion: p.packVersion };
+}
+
+/**
+ * Apply per-attachment annotations on top of a base rule resolution.
+ * Slice B W3.6-7. The base comes from `pickMaxDriver`; annotations layer
+ * over it:
+ *   - `override_required` always wins, replaces the base value.
+ *   - `tighten` wins iff the annotation value is stricter (numerically
+ *     greater for the rules slice B exercises — retention, cooling-off,
+ *     CPE all monotonic-stricter-as-larger).
+ *   - `loosen` is a no-op for slice B (the API gate at attach time
+ *     rejects loosen on conformanceClaimed=true packs; non-conformance-
+ *     claimed loosen semantics are slice C territory).
+ *
+ * When an annotation applies, the driver becomes the annotated attachment
+ * and the direction is `annotation_tighten` or `annotation_override` so
+ * the drivenBy trail surfaces the override.
+ *
+ * `override_required` ordering: primary first wins among multiple
+ * `override_required` annotations on the same rule (extreme edge case).
+ */
+function applyAnnotations(
+  base: { value: number | undefined; driver: PackInput | null },
+  packs: readonly PackInput[],
+  rule: PackAnnotation["rule"],
+): {
+  value: number | undefined;
+  driver: PackInput | null;
+  direction: StrictnessDirection | null;
+} {
+  let value = base.value;
+  let driver = base.driver;
+  let direction: StrictnessDirection | null = null;
+
+  // `override_required` first — they replace the base. If multiple, primary
+  // wins (the loop is already primary-first by the caller's sort).
+  for (const pack of packs) {
+    const ann = pack.annotations?.find(
+      (a) => a.rule === rule && a.direction === "override_required",
+    );
+    if (ann) {
+      value = ann.value;
+      driver = pack;
+      direction = "annotation_override";
+      break;
+    }
+  }
+
+  // `tighten` next — applies when the annotation value > current.
+  for (const pack of packs) {
+    const ann = pack.annotations?.find(
+      (a) => a.rule === rule && a.direction === "tighten",
+    );
+    if (ann && (value === undefined || ann.value > value)) {
+      value = ann.value;
+      driver = pack;
+      direction = "annotation_tighten";
+    }
+  }
+
+  return { value, driver, direction };
+}
+
+function applyNullableAnnotations(
+  base: { value: number | null; driver: PackInput | null },
+  packs: readonly PackInput[],
+  rule: PackAnnotation["rule"],
+): {
+  value: number | null;
+  driver: PackInput | null;
+  direction: StrictnessDirection | null;
+} {
+  let value: number | null = base.value;
+  let driver = base.driver;
+  let direction: StrictnessDirection | null = null;
+
+  for (const pack of packs) {
+    const ann = pack.annotations?.find(
+      (a) => a.rule === rule && a.direction === "override_required",
+    );
+    if (ann) {
+      value = ann.value;
+      driver = pack;
+      direction = "annotation_override";
+      break;
+    }
+  }
+
+  for (const pack of packs) {
+    const ann = pack.annotations?.find(
+      (a) => a.rule === rule && a.direction === "tighten",
+    );
+    if (ann && (value === null || ann.value > value)) {
+      value = ann.value;
+      driver = pack;
+      direction = "annotation_tighten";
+    }
+  }
+
+  return { value, driver, direction };
 }
 
 /**

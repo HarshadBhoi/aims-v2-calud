@@ -131,6 +131,28 @@ export const packRouter = router({
         }
       }
 
+      // Slice B W3.6-7: validate annotations before the transaction.
+      // `loosen` direction is rejected on conformance-claimed packs (the
+      // default) — you can't loosen a standard while claiming conformance
+      // to it. Slice C may permit loosen on conformanceClaimed=false packs;
+      // for slice B we don't introduce that surface.
+      if (input.annotations && input.annotations.length > 0) {
+        const looseners = input.annotations.filter((a) => a.direction === "loosen");
+        if (looseners.length > 0) {
+          // The pack attachment defaults conformanceClaimed=true, so any
+          // loosen here is rejected. Future slice C may pass
+          // conformanceClaimed=false on AttachPackInput; the gate updates then.
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              `Cannot loosen rule(s) on a conformance-claimed pack ` +
+              `(${input.packCode}:${input.packVersion}). Loosen annotations ` +
+              `are only valid on attachments where conformanceClaimed=false. ` +
+              `Affected rule(s): ${looseners.map((a) => a.rule).join(", ")}.`,
+          });
+        }
+      }
+
       try {
         const attached = await prismaTenant.$transaction(async (tx) => {
           const attachment = await tx.packAttachment.create({
@@ -141,6 +163,9 @@ export const packRouter = router({
               packVersion: input.packVersion,
               attachedBy: ctx.session.userId,
               isPrimary,
+              ...(input.annotations !== undefined
+                ? { annotations: input.annotations }
+                : {}),
             },
           });
           await resolveAndPersist(input.engagementId, tx as typeof prismaTenant);
