@@ -37,10 +37,11 @@ const AWS_KMS_MASTER_KEY_ALIAS =
   process.env["AWS_KMS_MASTER_KEY_ALIAS"] ?? "alias/aims-dev-master";
 
 // ─── Minimal GAGAS-2024.1 pack for slice A ───────────────────────────────
-// The canonical full pack lives in data-model/examples/gagas-2024.ts.
-// For slice A we only need the fields the user journey actually touches:
-// finding element structure + classification tiers. Future work integrates
-// the full pack definition (and pulls the rest via @aims/standard-packs).
+// The canonical full packs live in data-model/examples/{gagas-2024,iia-gias-2024}.ts.
+// For slice B we extend the slice-A subset with the fields the multi-pack
+// resolver needs: independence rules (cooling-off), CPE hours, and
+// semanticElementMappings (the canonical-code translation table per ADR-0010).
+// Full pack-content integration is still future work.
 
 const GAGAS_PACK = {
   code: "GAGAS",
@@ -67,6 +68,16 @@ const GAGAS_PACK = {
     { code: "CRITICAL", severity: 4 },
   ],
 
+  // GAGAS pack-element-codes are already canonical (CRITERIA / CONDITION /
+  // CAUSE / EFFECT match the canonical dictionary), so all four mappings
+  // are `exact`. Mirrors data-model/examples/gagas-2024.ts:1201-1224.
+  semanticElementMappings: [
+    { semanticCode: "CRITERIA", packElementCode: "CRITERIA", equivalenceStrength: "exact" },
+    { semanticCode: "CONDITION", packElementCode: "CONDITION", equivalenceStrength: "exact" },
+    { semanticCode: "CAUSE", packElementCode: "CAUSE", equivalenceStrength: "exact" },
+    { semanticCode: "EFFECT", packElementCode: "EFFECT", equivalenceStrength: "exact" },
+  ],
+
   annotationPolicy: {
     allowedDirections: ["tighten", "override_required"],
   },
@@ -75,6 +86,85 @@ const GAGAS_PACK = {
     fourElementComplete: true,
     workPaperCitationRequired: true,
     retentionYears: 7,
+  },
+
+  // GAGAS §3.02-3.108: 24-month cooling-off is stricter than IIA's 12.
+  independenceRules: {
+    coolingOffPeriodMonths: 24,
+  },
+
+  // GAGAS §4.16: 80 CPE hours per 2-year cycle, 24 in governmental subjects.
+  cpeRequirements: {
+    requiredHoursPerCycle: 80,
+  },
+};
+
+// Slice B seeds the IIA-GIAS-2024.1 pack alongside GAGAS so multi-pack
+// engagements can attach both. Mirrors data-model/examples/iia-gias-2024.ts
+// at the field shape the resolver needs; the canonical full pack has more
+// content not yet load-bearing in slice B.
+const IIA_GIAS_PACK = {
+  code: "IIA-GIAS",
+  version: "2024.1",
+  type: "methodology",
+  name: "Global Internal Audit Standards",
+  commonName: "IIA GIAS 2024",
+  issuingBody: "Institute of Internal Auditors (IIA)",
+  publishedYear: 2024,
+  effectiveFrom: "2025-01-09",
+  schemaVersion: "1.0.0",
+
+  // IIA Standard 15.1 — the "5 Cs" finding structure: Criteria, Condition,
+  // Cause (named ROOT_CAUSE here per IIA Standard 14.2), Consequence (named
+  // CONSEQUENCE; mapped to canonical EFFECT), Recommendation (the 5th C,
+  // inline per IIA's pack-level recommendationPresentation).
+  findingElements: [
+    { code: "CRITERIA", name: "Criteria", required: true, minLength: 50 },
+    { code: "CONDITION", name: "Condition", required: true, minLength: 50 },
+    { code: "ROOT_CAUSE", name: "Root Cause", required: true, minLength: 50 },
+    { code: "CONSEQUENCE", name: "Consequence", required: true, minLength: 50 },
+    { code: "RECOMMENDATION", name: "Recommendation", required: true, minLength: 50 },
+  ],
+
+  findingClassifications: [
+    { code: "LOW", severity: 1 },
+    { code: "MEDIUM", severity: 2 },
+    { code: "HIGH", severity: 3 },
+    { code: "CRITICAL", severity: 4 },
+  ],
+
+  // Five mappings, four `exact`, one `close` (RECOMMENDATION — IIA renders
+  // recommendations inline as the 5th C; AIMS canonical RECOMMENDATION is
+  // the same semantic slot but the rendering convention differs). Mirrors
+  // data-model/examples/iia-gias-2024.ts:690-721.
+  semanticElementMappings: [
+    { semanticCode: "CRITERIA", packElementCode: "CRITERIA", equivalenceStrength: "exact" },
+    { semanticCode: "CONDITION", packElementCode: "CONDITION", equivalenceStrength: "exact" },
+    { semanticCode: "CAUSE", packElementCode: "ROOT_CAUSE", equivalenceStrength: "exact" },
+    { semanticCode: "EFFECT", packElementCode: "CONSEQUENCE", equivalenceStrength: "exact" },
+    { semanticCode: "RECOMMENDATION", packElementCode: "RECOMMENDATION", equivalenceStrength: "close" },
+  ],
+
+  annotationPolicy: {
+    allowedDirections: ["tighten"],
+  },
+
+  documentationRequirements: {
+    fourElementComplete: false, // IIA uses 5 Cs, not 4 elements
+    workPaperCitationRequired: true,
+    retentionYears: 5, // IIA Standard 11.4 — shorter than GAGAS's 7
+  },
+
+  // IIA Standard 6.1 — 12-month cooling-off (less strict than GAGAS).
+  independenceRules: {
+    coolingOffPeriodMonths: 12,
+  },
+
+  // IIA CPE is certification-driven (CIA / CRMA), not org-mandated at the
+  // standard level. Pack-level value is null; tenant policy or auditor
+  // certification supplies the actual hours.
+  cpeRequirements: {
+    requiredHoursPerCycle: null as number | null,
   },
 };
 
@@ -103,6 +193,19 @@ async function main(): Promise<void> {
         publishedYear: 2024,
         packContent: GAGAS_PACK,
         contentHash: `sha256:${sha256Canonical(GAGAS_PACK)}`,
+      },
+    });
+
+    console.warn("[seed] seeding IIA-GIAS-2024.1 standard pack…");
+    await prisma.standardPack.create({
+      data: {
+        code: "IIA-GIAS",
+        version: "2024.1",
+        name: "Global Internal Audit Standards",
+        issuingBody: "Institute of Internal Auditors (IIA)",
+        publishedYear: 2024,
+        packContent: IIA_GIAS_PACK,
+        contentHash: `sha256:${sha256Canonical(IIA_GIAS_PACK)}`,
       },
     });
 

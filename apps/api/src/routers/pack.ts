@@ -1,20 +1,32 @@
 /**
- * Pack tRPC procedures — pack listing, attachment, and resolution.
+ * Pack tRPC procedures — pack listing, attachment lifecycle, resolution.
  *
- * `pack.list` is cross-tenant (StandardPack is a platform-level model and
- * exempted from the tenant extension). The other procedures are tenant-
- * scoped because PackAttachment is.
+ * Slice B introduces multi-pack attachment, the primary-methodology lifecycle
+ * (ADR-0011), and the strictness resolver write path. Lifecycle invariant:
+ *   - Exactly one PackAttachment per engagement carries `isPrimary = true`.
+ *   - Bare `pack.detach` of the primary returns PRECONDITION_FAILED.
+ *   - `pack.swapPrimary({ from, to })` is the sole supported affordance for
+ *     changing the primary methodology — atomic detach + attach inside one
+ *     transaction with a single resolver re-run at the end.
+ *
+ * Every state-changing procedure (`attach`, `detach`, `swapPrimary`) wraps
+ * the attachment-table write and the strictness re-resolve in one
+ * `$transaction` so the EngagementStrictness row is always consistent with
+ * the attachment graph (per ADR-0011).
  */
 
 import {
   AttachPackInput,
+  DetachPackInput,
   ResolvePackInput,
+  StrictnessInput,
+  SwapPrimaryInput,
   type PackSummary,
   type ResolvedRequirements,
 } from "@aims/validation";
 import { TRPCError } from "@trpc/server";
 
-import { resolvePackRequirements } from "../packs/resolver";
+import { resolveAndPersist, resolvePackRequirements } from "../packs/resolver";
 import { authenticatedProcedure, router } from "../trpc";
 
 export const packRouter = router({
@@ -38,8 +50,10 @@ export const packRouter = router({
   attach: authenticatedProcedure
     .input(AttachPackInput)
     .mutation(async ({ ctx, input }) => {
-      // Confirm engagement exists in this tenant (extension scopes).
-      const engagement = await ctx.services.prismaTenant.engagement.findUnique({
+      const { prismaTenant } = ctx.services;
+
+      // Confirm engagement exists in this tenant.
+      const engagement = await prismaTenant.engagement.findUnique({
         where: { id: input.engagementId },
       });
       if (!engagement) {
@@ -53,34 +67,64 @@ export const packRouter = router({
       }
 
       // Confirm the pack exists (cross-tenant).
-      const pack = await ctx.services.prismaTenant.standardPack.findUnique({
+      const pack = await prismaTenant.standardPack.findUnique({
         where: { code_version: { code: input.packCode, version: input.packVersion } },
       });
       if (!pack) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Pack not found." });
       }
 
-      // Create the attachment. Unique constraint on
-      // (engagementId, packCode, packVersion) surfaces P2002 on duplicate.
-      try {
-        const attachment = await ctx.services.prismaTenant.packAttachment.create({
-          // @ts-expect-error — tenantId injected at runtime by our extension.
-          data: {
-            engagementId: input.engagementId,
-            packCode: input.packCode,
-            packVersion: input.packVersion,
-            attachedBy: ctx.session.userId,
-          },
+      // Determine isPrimary: explicit input wins; otherwise default by
+      // "first attach → primary, subsequent → non-primary."
+      const existingCount = await prismaTenant.packAttachment.count({
+        where: { engagementId: input.engagementId },
+      });
+      const isPrimary = input.isPrimary ?? existingCount === 0;
+
+      // If the caller asks for isPrimary=true but there's already a primary,
+      // surface that as a clean error. The DB partial unique index would also
+      // catch this, but we throw earlier with a better message.
+      if (isPrimary && existingCount > 0) {
+        const currentPrimary = await prismaTenant.packAttachment.findFirst({
+          where: { engagementId: input.engagementId, isPrimary: true },
+          select: { packCode: true, packVersion: true },
         });
+        if (currentPrimary) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              `Engagement already has a primary methodology ` +
+              `(${currentPrimary.packCode}:${currentPrimary.packVersion}). ` +
+              `Use pack.swapPrimary to change which attachment is primary.`,
+          });
+        }
+      }
+
+      try {
+        const attached = await prismaTenant.$transaction(async (tx) => {
+          const attachment = await tx.packAttachment.create({
+            // @ts-expect-error — tenantId injected at runtime by our extension.
+            data: {
+              engagementId: input.engagementId,
+              packCode: input.packCode,
+              packVersion: input.packVersion,
+              attachedBy: ctx.session.userId,
+              isPrimary,
+            },
+          });
+          await resolveAndPersist(input.engagementId, tx as typeof prismaTenant);
+          return attachment;
+        });
+
         return {
-          id: attachment.id,
-          engagementId: attachment.engagementId,
-          packCode: attachment.packCode,
-          packVersion: attachment.packVersion,
-          attachedAt: attachment.attachedAt,
+          id: attached.id,
+          engagementId: attached.engagementId,
+          packCode: attached.packCode,
+          packVersion: attached.packVersion,
+          isPrimary: attached.isPrimary,
+          attachedAt: attached.attachedAt,
         };
       } catch (err) {
-        // Prisma uniqueness violation code
         if (isPrismaUniqueViolation(err)) {
           throw new TRPCError({
             code: "CONFLICT",
@@ -91,11 +135,181 @@ export const packRouter = router({
       }
     }),
 
+  // ─── detach ─────────────────────────────────────────────────────────────
+  // Per ADR-0011: bare detach of the primary methodology is rejected.
+  // Use `pack.swapPrimary` to change which attachment is primary.
+  detach: authenticatedProcedure
+    .input(DetachPackInput)
+    .mutation(async ({ ctx, input }) => {
+      const { prismaTenant } = ctx.services;
+
+      const engagement = await prismaTenant.engagement.findUnique({
+        where: { id: input.engagementId },
+      });
+      if (!engagement) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Engagement not found." });
+      }
+      if (engagement.packStrategyLocked) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Pack strategy is locked — unlock first (requires CAE approval).",
+        });
+      }
+
+      const attachment = await prismaTenant.packAttachment.findUnique({
+        where: {
+          engagementId_packCode_packVersion: {
+            engagementId: input.engagementId,
+            packCode: input.packCode,
+            packVersion: input.packVersion,
+          },
+        },
+      });
+      if (!attachment) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Pack attachment not found on this engagement.",
+        });
+      }
+      if (attachment.isPrimary) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Cannot detach the engagement's primary methodology directly. " +
+            "Use pack.swapPrimary({ from, to }) to change which attachment is primary.",
+        });
+      }
+
+      await prismaTenant.$transaction(async (tx) => {
+        await tx.packAttachment.delete({ where: { id: attachment.id } });
+        await resolveAndPersist(input.engagementId, tx as typeof prismaTenant);
+      });
+
+      return { detached: true };
+    }),
+
+  // ─── swapPrimary ────────────────────────────────────────────────────────
+  // Atomic primary swap: detach the old primary, attach (or flip) the new
+  // primary, re-run the resolver — all inside one transaction. Idempotent:
+  // if `from` is already detached and `to` is already primary, returns a
+  // no-op success rather than failing.
+  swapPrimary: authenticatedProcedure
+    .input(SwapPrimaryInput)
+    .mutation(async ({ ctx, input }) => {
+      const { prismaTenant } = ctx.services;
+
+      const engagement = await prismaTenant.engagement.findUnique({
+        where: { id: input.engagementId },
+      });
+      if (!engagement) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Engagement not found." });
+      }
+      if (engagement.packStrategyLocked) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Pack strategy is locked — unlock first (requires CAE approval).",
+        });
+      }
+
+      // Confirm `to` pack exists (cross-tenant lookup).
+      const toPack = await prismaTenant.standardPack.findUnique({
+        where: {
+          code_version: { code: input.toPackCode, version: input.toPackVersion },
+        },
+      });
+      if (!toPack) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Target pack not found." });
+      }
+
+      // Idempotency check: read current state. The swap is considered
+      // already-done iff:
+      //   1. `to` is the current primary, AND
+      //   2. `from` is not attached at all (i.e., the prior detach landed).
+      // Just "to is primary" isn't enough — a caller passing a bogus `from`
+      // must get an error, not a false success. (Round-3 Gemini catch.)
+      const currentPrimary = await prismaTenant.packAttachment.findFirst({
+        where: { engagementId: input.engagementId, isPrimary: true },
+      });
+      const fromAttachment = await prismaTenant.packAttachment.findUnique({
+        where: {
+          engagementId_packCode_packVersion: {
+            engagementId: input.engagementId,
+            packCode: input.fromPackCode,
+            packVersion: input.fromPackVersion,
+          },
+        },
+      });
+      const fromMatchesPrimary =
+        currentPrimary !== null &&
+        currentPrimary.packCode === input.fromPackCode &&
+        currentPrimary.packVersion === input.fromPackVersion;
+      const toMatchesPrimary =
+        currentPrimary !== null &&
+        currentPrimary.packCode === input.toPackCode &&
+        currentPrimary.packVersion === input.toPackVersion;
+
+      if (toMatchesPrimary && fromAttachment === null) {
+        // True idempotent path: the swap already happened in a prior call.
+        return { swapped: false, alreadyPrimary: true };
+      }
+
+      if (!fromMatchesPrimary) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            `swapPrimary 'from' pack does not match the engagement's current ` +
+            `primary methodology (current: ` +
+            `${currentPrimary ? `${currentPrimary.packCode}:${currentPrimary.packVersion}` : "none"}).`,
+        });
+      }
+
+      await prismaTenant.$transaction(async (tx) => {
+        // Detach the current primary.
+        // We don't `delete` it then re-create — instead flip isPrimary off
+        // so any existing (toCode, toVersion) attachment can be promoted.
+        // `from` is removed entirely; `to` becomes primary (creating the
+        // attachment if it wasn't already there).
+        await tx.packAttachment.delete({ where: { id: currentPrimary.id } });
+
+        // Look for an existing non-primary attachment of `to`. If present,
+        // flip it to primary; otherwise create it as the new primary.
+        const existingTo = await tx.packAttachment.findUnique({
+          where: {
+            engagementId_packCode_packVersion: {
+              engagementId: input.engagementId,
+              packCode: input.toPackCode,
+              packVersion: input.toPackVersion,
+            },
+          },
+        });
+        if (existingTo) {
+          await tx.packAttachment.update({
+            where: { id: existingTo.id },
+            data: { isPrimary: true },
+          });
+        } else {
+          await tx.packAttachment.create({
+            // @ts-expect-error — tenantId injected at runtime by our extension.
+            data: {
+              engagementId: input.engagementId,
+              packCode: input.toPackCode,
+              packVersion: input.toPackVersion,
+              attachedBy: ctx.session.userId,
+              isPrimary: true,
+            },
+          });
+        }
+
+        await resolveAndPersist(input.engagementId, tx as typeof prismaTenant);
+      });
+
+      return { swapped: true, alreadyPrimary: false };
+    }),
+
   // ─── resolve ────────────────────────────────────────────────────────────
   resolve: authenticatedProcedure
     .input(ResolvePackInput)
     .query(async ({ ctx, input }): Promise<ResolvedRequirements> => {
-      // Verify engagement exists + is in this tenant.
       const engagement = await ctx.services.prismaTenant.engagement.findUnique({
         where: { id: input.engagementId },
       });
@@ -103,6 +317,41 @@ export const packRouter = router({
         throw new TRPCError({ code: "NOT_FOUND", message: "Engagement not found." });
       }
       return resolvePackRequirements(input.engagementId, ctx.services.prismaTenant);
+    }),
+
+  // ─── strictness ─────────────────────────────────────────────────────────
+  // Slice B (ADR-0011): returns the persisted EngagementStrictness row plus
+  // its drivenBy trail. Read-only — the resolver is the only writer.
+  strictness: authenticatedProcedure
+    .input(StrictnessInput)
+    .query(async ({ ctx, input }) => {
+      const engagement = await ctx.services.prismaTenant.engagement.findUnique({
+        where: { id: input.engagementId },
+      });
+      if (!engagement) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Engagement not found." });
+      }
+      const row = await ctx.services.prismaTenant.engagementStrictness.findUnique({
+        where: { engagementId: input.engagementId },
+      });
+      if (!row) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message:
+            "No strictness row for this engagement yet — attach at least one pack to populate.",
+        });
+      }
+      return {
+        engagementId: row.engagementId,
+        retentionYears: row.retentionYears,
+        coolingOffMonths: row.coolingOffMonths,
+        cpeHours: row.cpeHours,
+        documentationRequirements: row.documentationRequirements,
+        requiredCanonicalCodes: row.requiredCanonicalCodes,
+        drivenBy: row.drivenBy,
+        version: row.version,
+        updatedAt: row.updatedAt,
+      };
     }),
 });
 

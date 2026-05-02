@@ -196,6 +196,7 @@ export default async function globalSetup(): Promise<void> {
         packCode: E2E_PACK_CODE,
         packVersion: E2E_PACK_VERSION,
         attachedBy: user.id,
+        isPrimary: true,
       },
     });
 

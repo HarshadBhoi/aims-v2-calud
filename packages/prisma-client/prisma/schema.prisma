@@ -312,8 +312,12 @@ model Engagement {
 }
 
 /// An engagement ↔ StandardPack attachment.
-/// Slice A expects one pack per engagement (GAGAS-2024.1). Multi-pack +
-/// annotations come in Slice B.
+/// Slice A had one pack per engagement (GAGAS-2024.1). Slice B introduces
+/// multi-pack attachment with the `isPrimary` flag — exactly one primary
+/// methodology per engagement (enforced via a partial unique index in the
+/// migration). The resolver picks up the primary for write-time canonical-
+/// code translation per ADR-0010 and uses the full attachment set for the
+/// strictness union per ADR-0011.
 model PackAttachment {
   id           String     @id @default(cuid())
   tenantId     String
@@ -324,11 +328,19 @@ model PackAttachment {
   packVersion String
   pack        StandardPack @relation(fields: [packCode, packVersion], references: [code, version])
 
+  /// Slice B: exactly one PackAttachment per engagement carries isPrimary=true.
+  /// Slice A's existing single-pack rows backfill to isPrimary=true (the only
+  /// attachment is the primary by definition). The migration adds a partial
+  /// unique index `... WHERE "isPrimary" = true` to enforce the invariant at
+  /// the DB layer.
+  isPrimary Boolean @default(false)
+
   attachedAt DateTime @default(now()) @db.Timestamptz(6)
   attachedBy String
 
   @@unique([engagementId, packCode, packVersion])
   @@index([tenantId])
+  @@index([engagementId, isPrimary])
   @@map("pack_attachments")
   @@schema("public")
 }

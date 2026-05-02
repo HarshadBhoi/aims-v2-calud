@@ -12,13 +12,42 @@ export const AttachPackInput = z.object({
   engagementId: CuidString,
   packCode: z.string().min(1).max(64),
   packVersion: z.string().min(1).max(32),
+  /**
+   * Whether this attachment is the engagement's primary methodology.
+   * Slice B invariant: exactly one primary per engagement at all times
+   * (per ADR-0011). When omitted, the server picks: first attach for the
+   * engagement → primary; subsequent attaches → non-primary.
+   * Use `pack.swapPrimary` to change which attachment is primary.
+   */
+  isPrimary: z.boolean().optional(),
 });
 export type AttachPackInput = z.infer<typeof AttachPackInput>;
+
+export const DetachPackInput = z.object({
+  engagementId: CuidString,
+  packCode: z.string().min(1).max(64),
+  packVersion: z.string().min(1).max(32),
+});
+export type DetachPackInput = z.infer<typeof DetachPackInput>;
+
+export const SwapPrimaryInput = z.object({
+  engagementId: CuidString,
+  fromPackCode: z.string().min(1).max(64),
+  fromPackVersion: z.string().min(1).max(32),
+  toPackCode: z.string().min(1).max(64),
+  toPackVersion: z.string().min(1).max(32),
+});
+export type SwapPrimaryInput = z.infer<typeof SwapPrimaryInput>;
 
 export const ResolvePackInput = z.object({
   engagementId: CuidString,
 });
 export type ResolvePackInput = z.infer<typeof ResolvePackInput>;
+
+export const StrictnessInput = z.object({
+  engagementId: CuidString,
+});
+export type StrictnessInput = z.infer<typeof StrictnessInput>;
 
 // ─── Output: ResolvedRequirements ──────────────────────────────────────────
 

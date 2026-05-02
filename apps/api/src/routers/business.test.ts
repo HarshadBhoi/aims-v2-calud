@@ -218,6 +218,62 @@ beforeAll(async () => {
           workPaperCitationRequired: true,
           retentionYears: 7,
         },
+        // Slice B fields needed by the strictness resolver.
+        semanticElementMappings: [
+          { semanticCode: "CRITERIA", packElementCode: "CRITERIA", equivalenceStrength: "exact" },
+          { semanticCode: "CONDITION", packElementCode: "CONDITION", equivalenceStrength: "exact" },
+          { semanticCode: "CAUSE", packElementCode: "CAUSE", equivalenceStrength: "exact" },
+          { semanticCode: "EFFECT", packElementCode: "EFFECT", equivalenceStrength: "exact" },
+        ],
+        independenceRules: { coolingOffPeriodMonths: 24 },
+        cpeRequirements: { requiredHoursPerCycle: 80 },
+      },
+    },
+  });
+
+  // Slice B: seed IIA-GIAS-2024.1 alongside GAGAS so multi-pack tests can
+  // attach both. Mirrors data-model/examples/iia-gias-2024.ts at the field
+  // shape the resolver actually consumes.
+  await prisma.standardPack.create({
+    data: {
+      code: "IIA-GIAS",
+      version: "2024.1",
+      name: "IIA Global Internal Audit Standards 2024",
+      issuingBody: "Institute of Internal Auditors",
+      publishedYear: 2024,
+      contentHash: "sha256:iia-test-hash",
+      packContent: {
+        findingElements: [
+          { code: "CRITERIA", name: "Criteria", required: true, minLength: 50 },
+          { code: "CONDITION", name: "Condition", required: true, minLength: 50 },
+          { code: "ROOT_CAUSE", name: "Root Cause", required: true, minLength: 50 },
+          { code: "CONSEQUENCE", name: "Consequence", required: true, minLength: 50 },
+          { code: "RECOMMENDATION", name: "Recommendation", required: true, minLength: 50 },
+        ],
+        findingClassifications: [
+          { code: "LOW", severity: 1 },
+          { code: "MEDIUM", severity: 2 },
+          { code: "HIGH", severity: 3 },
+          { code: "CRITICAL", severity: 4 },
+        ],
+        documentationRequirements: {
+          fourElementComplete: false,
+          workPaperCitationRequired: true,
+          retentionYears: 5,
+        },
+        semanticElementMappings: [
+          { semanticCode: "CRITERIA", packElementCode: "CRITERIA", equivalenceStrength: "exact" },
+          { semanticCode: "CONDITION", packElementCode: "CONDITION", equivalenceStrength: "exact" },
+          { semanticCode: "CAUSE", packElementCode: "ROOT_CAUSE", equivalenceStrength: "exact" },
+          { semanticCode: "EFFECT", packElementCode: "CONSEQUENCE", equivalenceStrength: "exact" },
+          {
+            semanticCode: "RECOMMENDATION",
+            packElementCode: "RECOMMENDATION",
+            equivalenceStrength: "close",
+          },
+        ],
+        independenceRules: { coolingOffPeriodMonths: 12 },
+        cpeRequirements: { requiredHoursPerCycle: null },
       },
     },
   });
@@ -370,6 +426,8 @@ describe("pack router", () => {
       packVersion: "2024.1",
     });
     expect(attached.packCode).toBe("GAGAS");
+    // Slice B: first pack attached defaults to isPrimary=true.
+    expect(attached.isPrimary).toBe(true);
 
     const resolved = await caller.pack.resolve({ engagementId: engagement.id });
     expect(resolved.findingElements).toHaveLength(4);
@@ -381,6 +439,18 @@ describe("pack router", () => {
     ]);
     expect(resolved.documentationRequirements.retentionYears).toBe(7);
     expect(resolved.sources).toEqual([{ packCode: "GAGAS", packVersion: "2024.1" }]);
+
+    // Slice B: pack.attach now persists an EngagementStrictness row.
+    const strictness = await caller.pack.strictness({ engagementId: engagement.id });
+    expect(strictness.retentionYears).toBe(7);
+    expect(strictness.coolingOffMonths).toBe(24);
+    expect(strictness.cpeHours).toBe(80);
+    expect(strictness.requiredCanonicalCodes).toEqual([
+      "CAUSE",
+      "CONDITION",
+      "CRITERIA",
+      "EFFECT",
+    ]);
   });
 
   it("rejects duplicate attachment", async () => {
@@ -427,6 +497,269 @@ describe("pack router", () => {
     await expect(
       caller.pack.resolve({ engagementId: engagement.id }),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+});
+
+describe("pack router — multi-pack + primary lifecycle (slice B W1.2-3)", () => {
+  // Helper: make a fresh engagement with no packs attached.
+  async function freshEngagement(suffix: string): Promise<string> {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const eng = await caller.engagement.create({
+      name: `slice-b-${suffix}`,
+      auditeeName: "MultiPackCo",
+      fiscalPeriod: "FY27",
+      periodStart: new Date("2027-01-01"),
+      periodEnd: new Date("2027-12-31"),
+      leadUserId: userId,
+    });
+    return eng.id;
+  }
+
+  it("first pack attaches as primary; second pack defaults to non-primary", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const engId = await freshEngagement("default-isprimary");
+
+    const first = await caller.pack.attach({
+      engagementId: engId,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+    expect(first.isPrimary).toBe(true);
+
+    const second = await caller.pack.attach({
+      engagementId: engId,
+      packCode: "IIA-GIAS",
+      packVersion: "2024.1",
+    });
+    expect(second.isPrimary).toBe(false);
+  });
+
+  it("multi-pack attach: strictness reflects the union (GAGAS retention 7 max, RECOMMENDATION code added)", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const engId = await freshEngagement("multi-strictness");
+
+    await caller.pack.attach({
+      engagementId: engId,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+    await caller.pack.attach({
+      engagementId: engId,
+      packCode: "IIA-GIAS",
+      packVersion: "2024.1",
+    });
+
+    const strictness = await caller.pack.strictness({ engagementId: engId });
+    expect(strictness.retentionYears).toBe(7); // max(GAGAS 7, IIA 5)
+    expect(strictness.coolingOffMonths).toBe(24); // max(GAGAS 24, IIA 12)
+    expect(strictness.cpeHours).toBe(80); // GAGAS 80, IIA null → 80
+    expect(strictness.requiredCanonicalCodes).toEqual([
+      "CAUSE",
+      "CONDITION",
+      "CRITERIA",
+      "EFFECT",
+      "RECOMMENDATION",
+    ]);
+    expect(Array.isArray(strictness.drivenBy)).toBe(true);
+  });
+
+  it("attaching a second pack with isPrimary=true is rejected (one primary invariant)", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const engId = await freshEngagement("dup-primary");
+
+    await caller.pack.attach({
+      engagementId: engId,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+
+    await expect(
+      caller.pack.attach({
+        engagementId: engId,
+        packCode: "IIA-GIAS",
+        packVersion: "2024.1",
+        isPrimary: true,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
+  it("detach: bare detach of the primary returns PRECONDITION_FAILED (ADR-0011 invariant)", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const engId = await freshEngagement("detach-primary");
+
+    await caller.pack.attach({
+      engagementId: engId,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+
+    await expect(
+      caller.pack.detach({
+        engagementId: engId,
+        packCode: "GAGAS",
+        packVersion: "2024.1",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
+  it("detach: non-primary detach succeeds and re-resolves strictness", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const engId = await freshEngagement("detach-secondary");
+
+    await caller.pack.attach({
+      engagementId: engId,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+    await caller.pack.attach({
+      engagementId: engId,
+      packCode: "IIA-GIAS",
+      packVersion: "2024.1",
+    });
+
+    // Detach IIA (non-primary).
+    const result = await caller.pack.detach({
+      engagementId: engId,
+      packCode: "IIA-GIAS",
+      packVersion: "2024.1",
+    });
+    expect(result.detached).toBe(true);
+
+    // Strictness now reflects GAGAS-only.
+    const strictness = await caller.pack.strictness({ engagementId: engId });
+    expect(strictness.requiredCanonicalCodes).toEqual([
+      "CAUSE",
+      "CONDITION",
+      "CRITERIA",
+      "EFFECT",
+    ]);
+  });
+
+  it("swapPrimary: atomic swap of primary methodology (GAGAS → IIA)", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const engId = await freshEngagement("swap-primary");
+
+    await caller.pack.attach({
+      engagementId: engId,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+    await caller.pack.attach({
+      engagementId: engId,
+      packCode: "IIA-GIAS",
+      packVersion: "2024.1",
+    });
+
+    const result = await caller.pack.swapPrimary({
+      engagementId: engId,
+      fromPackCode: "GAGAS",
+      fromPackVersion: "2024.1",
+      toPackCode: "IIA-GIAS",
+      toPackVersion: "2024.1",
+    });
+    expect(result.swapped).toBe(true);
+    expect(result.alreadyPrimary).toBe(false);
+
+    // After swap: GAGAS is gone, IIA is primary.
+    const strictness = await caller.pack.strictness({ engagementId: engId });
+    // GAGAS removed, only IIA left → IIA's retention=5.
+    expect(strictness.retentionYears).toBe(5);
+    // IIA is now the only attachment AND the primary, so the request union
+    // matches IIA's 5 codes alone.
+    expect(strictness.requiredCanonicalCodes).toEqual([
+      "CAUSE",
+      "CONDITION",
+      "CRITERIA",
+      "EFFECT",
+      "RECOMMENDATION",
+    ]);
+  });
+
+  it("swapPrimary: calling twice with the same args is idempotent (no-op after first)", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const engId = await freshEngagement("swap-idempotent");
+
+    await caller.pack.attach({
+      engagementId: engId,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+    await caller.pack.attach({
+      engagementId: engId,
+      packCode: "IIA-GIAS",
+      packVersion: "2024.1",
+    });
+
+    const first = await caller.pack.swapPrimary({
+      engagementId: engId,
+      fromPackCode: "GAGAS",
+      fromPackVersion: "2024.1",
+      toPackCode: "IIA-GIAS",
+      toPackVersion: "2024.1",
+    });
+    expect(first.swapped).toBe(true);
+
+    // Second call with identical args. `from` is no longer attached and
+    // `to` is already primary → idempotent no-op.
+    const second = await caller.pack.swapPrimary({
+      engagementId: engId,
+      fromPackCode: "GAGAS",
+      fromPackVersion: "2024.1",
+      toPackCode: "IIA-GIAS",
+      toPackVersion: "2024.1",
+    });
+    expect(second.swapped).toBe(false);
+    expect(second.alreadyPrimary).toBe(true);
+  });
+
+  it("swapPrimary: rejects when 'from' isn't current primary AND 'to' isn't either", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const engId = await freshEngagement("swap-bad-both");
+
+    // Attach GAGAS (primary) and IIA (non-primary).
+    await caller.pack.attach({
+      engagementId: engId,
+      packCode: "GAGAS",
+      packVersion: "2024.1",
+    });
+    await caller.pack.attach({
+      engagementId: engId,
+      packCode: "IIA-GIAS",
+      packVersion: "2024.1",
+    });
+
+    // Bogus call: from=IIA-GIAS (which is non-primary, not the current
+    // primary), to=IIA-GIAS (also not primary). The idempotency path
+    // doesn't fire because `to` isn't already primary; the from-must-match
+    // check rejects.
+    await expect(
+      caller.pack.swapPrimary({
+        engagementId: engId,
+        fromPackCode: "IIA-GIAS",
+        fromPackVersion: "2024.1",
+        toPackCode: "IIA-GIAS",
+        toPackVersion: "2024.1",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
+  it("strictness query returns NOT_FOUND for engagements with no attachments", async () => {
+    const { services } = requireSetup();
+    const caller = appRouter.createCaller(makeAuthedContext(services));
+    const engId = await freshEngagement("no-strictness");
+
+    await expect(
+      caller.pack.strictness({ engagementId: engId }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });
 
@@ -1172,6 +1505,7 @@ describe("cross-tenant isolation sweep", () => {
         packCode: "GAGAS",
         packVersion: "2024.1",
         attachedBy: siblingUser.id,
+        isPrimary: true,
       },
     });
 
