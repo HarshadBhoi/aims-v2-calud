@@ -20,6 +20,22 @@ export default function EngagementDetailPage() {
     { engagementId: params.id },
     { enabled: Boolean(params.id) },
   );
+  // Slice B W3.2-3: persisted strictness row (union of effective rules
+  // across attached packs per ADR-0011) + the attached-pack list driving
+  // the multi-report affordance below.
+  const strictness = trpc.pack.strictness.useQuery(
+    { engagementId: params.id },
+    {
+      enabled: Boolean(params.id),
+      // Strictness query returns NOT_FOUND when no packs are attached;
+      // that's an expected state, not an error to surface.
+      retry: false,
+    },
+  );
+  const attached = trpc.pack.listAttached.useQuery(
+    { engagementId: params.id },
+    { enabled: Boolean(params.id) },
+  );
 
   if (engagement.isLoading) {
     return <p className="text-sm text-[var(--color-muted)]">Loading…</p>;
@@ -71,6 +87,58 @@ export default function EngagementDetailPage() {
           <dt className="text-[var(--color-muted)]">Created</dt>
           <dd>{new Date(e.createdAt).toLocaleString()}</dd>
         </dl>
+      </Card>
+
+      <Card>
+        <CardTitle>Strictness</CardTitle>
+        <CardDescription>
+          Effective rules computed by the resolver across attached packs (per
+          ADR-0011). Re-runs idempotently on pack attach/detach/swap.
+        </CardDescription>
+
+        {attached.data && attached.data.length > 0 ? (
+          <div className="mb-4 flex flex-wrap gap-2">
+            {attached.data.map((a) => (
+              <span
+                key={`${a.packCode}:${a.packVersion}`}
+                className={
+                  a.isPrimary
+                    ? "inline-flex items-center rounded-full bg-[var(--color-primary)]/10 px-2.5 py-0.5 text-xs font-medium text-[var(--color-primary)]"
+                    : "inline-flex items-center rounded-full bg-black/5 px-2.5 py-0.5 text-xs font-medium text-black/70"
+                }
+                title={`${a.name} — ${a.issuingBody}${a.isPrimary ? " (primary methodology)" : ""}`}
+              >
+                {a.packCode}:{a.packVersion}
+                {a.isPrimary ? " · primary" : ""}
+              </span>
+            ))}
+          </div>
+        ) : null}
+
+        {strictness.data ? (
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+            <dt className="text-[var(--color-muted)]">Document retention</dt>
+            <dd>{strictness.data.retentionYears.toString()} years</dd>
+            <dt className="text-[var(--color-muted)]">Cooling-off (independence)</dt>
+            <dd>{strictness.data.coolingOffMonths.toString()} months</dd>
+            <dt className="text-[var(--color-muted)]">CPE hours per cycle</dt>
+            <dd>
+              {strictness.data.cpeHours !== null
+                ? `${strictness.data.cpeHours.toString()} hours`
+                : "Not declared"}
+            </dd>
+            <dt className="text-[var(--color-muted)]">Required canonical codes</dt>
+            <dd>
+              {strictness.data.requiredCanonicalCodes.length > 0
+                ? strictness.data.requiredCanonicalCodes.join(", ")
+                : "—"}
+            </dd>
+          </dl>
+        ) : (
+          <p className="text-sm text-[var(--color-muted)]">
+            No strictness row yet — attach a pack to populate.
+          </p>
+        )}
       </Card>
 
       <Card>
@@ -130,7 +198,9 @@ export default function EngagementDetailPage() {
           <div>
             <CardTitle>Reports</CardTitle>
             <CardDescription>
-              Engagement reports composed from current findings + pack disclosures.
+              Reports composed from current findings + pack disclosures. Slice
+              B supports multiple reports per engagement, each attesting to a
+              different attached pack.
             </CardDescription>
           </div>
           <Link href={`/dashboard/engagements/${params.id}/reports/new`}>
@@ -141,34 +211,68 @@ export default function EngagementDetailPage() {
         {reports.isLoading ? (
           <p className="text-sm text-[var(--color-muted)]">Loading reports…</p>
         ) : reports.data && reports.data.length > 0 ? (
-          <ul className="divide-y divide-black/5">
-            {reports.data.map((r) => (
-              <li key={r.id} className="py-3">
-                <Link
-                  href={`/dashboard/engagements/${params.id}/reports/${r.id}`}
-                  className="flex items-center justify-between hover:underline"
-                >
-                  <div>
-                    <p className="text-sm font-medium">{r.title}</p>
-                    <p className="text-xs text-[var(--color-muted)]">
-                      {r.templateKey} · updated {new Date(r.updatedAt).toLocaleString()}
-                    </p>
-                  </div>
-                  <span
-                    className={
-                      r.status === "PUBLISHED"
-                        ? "text-xs font-medium text-green-700"
-                        : r.status === "IN_REVIEW"
-                          ? "text-xs font-medium text-amber-700"
-                          : "text-xs font-medium text-[var(--color-muted)]"
-                    }
+          <>
+            <ul className="divide-y divide-black/5">
+              {reports.data.map((r) => (
+                <li key={r.id} className="py-3">
+                  <Link
+                    href={`/dashboard/engagements/${params.id}/reports/${r.id}`}
+                    className="flex items-center justify-between hover:underline"
                   >
-                    {r.status}
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </ul>
+                    <div>
+                      <p className="text-sm font-medium">{r.title}</p>
+                      <p className="text-xs text-[var(--color-muted)]">
+                        Attests to {r.attestsToPackCode}:{r.attestsToPackVersion} ·
+                        updated {new Date(r.updatedAt).toLocaleString()}
+                      </p>
+                    </div>
+                    <span
+                      className={
+                        r.status === "PUBLISHED"
+                          ? "text-xs font-medium text-green-700"
+                          : r.status === "IN_REVIEW"
+                            ? "text-xs font-medium text-amber-700"
+                            : "text-xs font-medium text-[var(--color-muted)]"
+                      }
+                    >
+                      {r.status}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+
+            {/* W3 day 2-3 "compose another report" affordance — surfaces the
+                attached packs that don't yet have a report so the user can
+                quick-launch composing one against a different methodology. */}
+            {attached.data ? (() => {
+              const reportedPackKeys = new Set(
+                reports.data.map((r) => `${r.attestsToPackCode}:${r.attestsToPackVersion}`),
+              );
+              const remaining = attached.data.filter(
+                (a) => !reportedPackKeys.has(`${a.packCode}:${a.packVersion}`),
+              );
+              if (remaining.length === 0) return null;
+              return (
+                <div className="mt-4 rounded-md border border-dashed border-black/10 bg-black/[0.02] p-3">
+                  <p className="text-xs font-medium text-[var(--color-muted)]">
+                    Compose another report against a different pack:
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {remaining.map((a) => (
+                      <Link
+                        key={`${a.packCode}:${a.packVersion}`}
+                        href={`/dashboard/engagements/${params.id}/reports/new?attestsTo=${a.packCode}:${a.packVersion}`}
+                        className="inline-flex items-center rounded-md border border-black/10 bg-white px-2.5 py-1 text-xs font-medium hover:border-[var(--color-primary)] hover:text-[var(--color-primary)]"
+                      >
+                        + {a.packCode}:{a.packVersion}
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              );
+            })() : null}
+          </>
         ) : (
           <p className="text-sm text-[var(--color-muted)]">
             No reports yet. Click &ldquo;New report&rdquo; to generate one.

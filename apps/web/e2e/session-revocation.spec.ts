@@ -43,8 +43,10 @@ test("session revocation kicks the user back to sign-in", async ({ page }) => {
   // ─── 3. Revoke the active session in the DB ────────────────────────────
   // Migration role required — `aims_app` can't bypass RLS for cross-tenant
   // session lookup. Mirrors global-setup.ts.
-  const adminUrl = process.env.DATABASE_ADMIN_URL ?? process.env.DATABASE_URL;
-  const prisma = createAdminPrismaClient({ datasourceUrl: adminUrl });
+  const adminUrl = process.env["DATABASE_ADMIN_URL"] ?? process.env["DATABASE_URL"];
+  const prisma = createAdminPrismaClient(
+    adminUrl !== undefined ? { datasourceUrl: adminUrl } : {},
+  );
   try {
     const user = await prisma.user.findFirstOrThrow({
       where: { email: E2E_USER_EMAIL },

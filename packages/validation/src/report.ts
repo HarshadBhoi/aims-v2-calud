@@ -139,6 +139,13 @@ export type ReportSummary = {
   readonly title: string;
   readonly status: ReportStatusInput;
   readonly authorId: string;
+  /**
+   * Slice B: the pack this report attests to. Surfaced in list views so
+   * users can distinguish reports on the same engagement that target
+   * different methodologies.
+   */
+  readonly attestsToPackCode: string;
+  readonly attestsToPackVersion: string;
   readonly version: number;
   readonly createdAt: Date;
   readonly updatedAt: Date;

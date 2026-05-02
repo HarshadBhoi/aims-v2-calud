@@ -237,10 +237,25 @@ export function resolveStrictness(packs: readonly PackInput[]): StrictnessResolu
     }
   }
 
-  // ResolvedRequirements: UI labels come from primary; multi-pack consumers
-  // take primary's findingElements as the canonical-label source per ADR-0010.
+  // ResolvedRequirements: per slice plan §3.3 + ADR-0010 — labels come from
+  // the primary pack's findingElements; storage keys are canonical codes
+  // sourced via that pack's semanticElementMappings. The editor uses
+  // requirement.code (canonical) as both the React key and the
+  // updateElement payload's elementCode, while requirement.name carries
+  // the primary's human label (e.g., "Root Cause" for IIA, "Cause" for
+  // GAGAS — both back the canonical CAUSE slot).
+  const primaryPackToCanonical = new Map<string, string>();
+  for (const m of primary.content.semanticElementMappings ?? []) {
+    primaryPackToCanonical.set(m.packElementCode, m.semanticCode);
+  }
+  const translatedFindingElements: FindingElementRequirement[] = (
+    primary.content.findingElements ?? []
+  ).map((fe) => {
+    const canonical = primaryPackToCanonical.get(fe.code);
+    return canonical !== undefined ? { ...fe, code: canonical } : fe;
+  });
   const resolved: ResolvedRequirements = {
-    findingElements: primary.content.findingElements ?? [],
+    findingElements: translatedFindingElements,
     findingClassifications: primary.content.findingClassifications ?? [],
     documentationRequirements,
     sources: sorted.map((p) => ({ packCode: p.packCode, packVersion: p.packVersion })),

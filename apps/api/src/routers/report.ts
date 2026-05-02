@@ -953,6 +953,8 @@ function toSummary(row: ReportRow): ReportSummary {
     title: row.title,
     status: row.status,
     authorId: row.authorId,
+    attestsToPackCode: row.attestsToPackCode,
+    attestsToPackVersion: row.attestsToPackVersion,
     version: row.version,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,

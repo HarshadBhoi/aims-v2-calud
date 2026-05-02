@@ -49,6 +49,20 @@ export const StrictnessInput = z.object({
 });
 export type StrictnessInput = z.infer<typeof StrictnessInput>;
 
+export const ListAttachedPacksInput = z.object({
+  engagementId: CuidString,
+});
+export type ListAttachedPacksInput = z.infer<typeof ListAttachedPacksInput>;
+
+export type AttachedPackSummary = {
+  readonly packCode: string;
+  readonly packVersion: string;
+  readonly name: string;
+  readonly issuingBody: string;
+  readonly isPrimary: boolean;
+  readonly conformanceClaimed: boolean;
+};
+
 // ─── Output: ResolvedRequirements ──────────────────────────────────────────
 
 /**

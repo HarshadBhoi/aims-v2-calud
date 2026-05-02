@@ -18,9 +18,11 @@
 import {
   AttachPackInput,
   DetachPackInput,
+  ListAttachedPacksInput,
   ResolvePackInput,
   StrictnessInput,
   SwapPrimaryInput,
+  type AttachedPackSummary,
   type PackSummary,
   type ResolvedRequirements,
 } from "@aims/validation";
@@ -45,6 +47,35 @@ export const packRouter = router({
     });
     return packs;
   }),
+
+  // ─── listAttached (W3 day 2-3 — multi-report composer + strictness UI) ──
+  // Returns the engagement's currently-attached packs with the join to
+  // StandardPack metadata + the per-attachment flags (`isPrimary`,
+  // `conformanceClaimed`). The W3 report composer's `attestsTo` dropdown
+  // and the engagement-detail strictness panel both consume this.
+  listAttached: authenticatedProcedure
+    .input(ListAttachedPacksInput)
+    .query(async ({ ctx, input }): Promise<AttachedPackSummary[]> => {
+      const engagement = await ctx.services.prismaTenant.engagement.findUnique({
+        where: { id: input.engagementId },
+      });
+      if (!engagement) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Engagement not found." });
+      }
+      const attachments = await ctx.services.prismaTenant.packAttachment.findMany({
+        where: { engagementId: input.engagementId },
+        include: { pack: true },
+        orderBy: [{ isPrimary: "desc" }, { packCode: "asc" }],
+      });
+      return attachments.map((a) => ({
+        packCode: a.packCode,
+        packVersion: a.packVersion,
+        name: a.pack.name,
+        issuingBody: a.pack.issuingBody,
+        isPrimary: a.isPrimary,
+        conformanceClaimed: a.conformanceClaimed,
+      }));
+    }),
 
   // ─── attach ─────────────────────────────────────────────────────────────
   attach: authenticatedProcedure
